@@ -70,17 +70,19 @@ pub use member_grouping::{MemberEntry, MemberGroup};
 pub use message_viewport::MessagePaneSource;
 #[cfg(test)]
 pub(crate) use model::ActionAvailability;
+pub(in crate::tui) use model::GuildBranch;
 pub(in crate::tui) use model::ThreadCardImagePreview;
 pub use model::{
     ActionItem, AppliedForumTag, AttachmentDownloadProgressView, AttachmentViewerItem,
     ChannelActionItem, ChannelPaneEntry, ChannelSearchSuggestionItem, ChannelSwitcherItem,
     ChannelThreadItem, EmojiReactionItem, FocusPane, ForumPostComposerAttachmentView,
-    ForumPostComposerField, ForumPostComposerTagView, ForumPostComposerView, GuildActionItem,
-    GuildPaneEntry, LocalUploadPreviewView, MemberActionItem, MemberSearchResultItem,
-    MessageActionItem, MessageActionKind, MessageSearchResultItem, MuteActionDurationItem,
-    PollVotePickerItem, SearchFieldView, SearchPopupMode, SearchPopupView, SearchResultItem,
-    SearchSuggestionItem, ThreadActionItem, ThreadEditField, ThreadEditTagView, ThreadEditView,
-    ThreadMessagePreview, ThreadNotificationItem, ThreadSummary,
+    ForumPostComposerField, ForumPostComposerTagView, ForumPostComposerView,
+    GUILD_PANE_ENTRY_HEIGHT, GuildActionItem, GuildPaneEntry, LocalUploadPreviewView,
+    MemberActionItem, MemberSearchResultItem, MessageActionItem, MessageActionKind,
+    MessageSearchResultItem, MuteActionDurationItem, PollVotePickerItem, SearchFieldView,
+    SearchPopupMode, SearchPopupView, SearchResultItem, SearchSuggestionItem, ThreadActionItem,
+    ThreadEditField, ThreadEditTagView, ThreadEditView, ThreadMessagePreview,
+    ThreadNotificationItem, ThreadSummary,
 };
 pub use model::{
     ChannelActionKind, GuildActionKind, MemberActionKind, MessageUrlItem, ThreadActionKind,

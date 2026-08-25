@@ -25,10 +25,11 @@ use super::{
     state::{
         ActiveModalPopupKind, AppliedForumTag, AttachmentDownloadProgressView,
         AttachmentViewerItem, ChannelSwitcherItem, ChannelThreadItem, DashboardState,
-        DisplayOptionItem, EmojiReactionItem, FocusPane, MessageActionItem, MessageUrlItem,
-        PollVotePickerItem, SearchFieldView, SearchPopupMode, SearchPopupView, SearchResultItem,
-        SelectablePopupSnapshot, SelectablePopupTarget, ThreadActionItem, apply_discord_foreground,
-        normal_text_style, presence_marker, presence_style,
+        DisplayOptionItem, EmojiReactionItem, FocusPane, GUILD_PANE_ENTRY_HEIGHT,
+        MessageActionItem, MessageUrlItem, PollVotePickerItem, SearchFieldView, SearchPopupMode,
+        SearchPopupView, SearchResultItem, SelectablePopupSnapshot, SelectablePopupTarget,
+        ThreadActionItem, apply_discord_foreground, normal_text_style, presence_marker,
+        presence_style,
     },
     text::{EmojiImageSize, sanitize_for_display_width, truncate_display_width},
 };
@@ -143,7 +144,8 @@ pub fn sync_view_heights(area: Rect, state: &mut DashboardState) {
             "Servers",
             state.is_pane_visible(FocusPane::Guilds),
         )
-        .saturating_sub(guild_filter_row),
+        .saturating_sub(guild_filter_row)
+            / GUILD_PANE_ENTRY_HEIGHT,
     );
     let channel_visible = state.is_pane_visible(FocusPane::Channels);
     let channel_filter_row = usize::from(state.is_channel_pane_filter_active() && channel_visible);

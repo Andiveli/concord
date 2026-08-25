@@ -1,145 +1,96 @@
 use super::*;
 
+const COMPACT_ICON_WIDTH: u16 = 4;
+const COMPACT_ICON_HEIGHT: u16 = 2;
+
 pub(in crate::tui::ui) fn render_guilds(frame: &mut Frame, area: Rect, state: &DashboardState) {
-    let dashboard = state;
     let focused = state.focus() == FocusPane::Guilds;
     let filter_query = state.guild_pane_filter_query();
-    let block = panel_block("Servers", focused);
+    let block = panel_block("", focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-
     let (list_area, filter_area) = split_pane_filter_area(inner, filter_query.is_some());
-
-    let entry_count = state.guild_pane_filtered_entries().len();
     let entries = state.visible_guild_pane_entries();
-    let max_width = (list_area.width as usize)
-        .saturating_sub(selection_marker_width())
-        .saturating_sub(4);
-    let horizontal_scroll = state.guild_horizontal_scroll();
     let selected = state.focused_guild_selection();
-    let items: Vec<ListItem> = entries
+
+    let items = entries
         .iter()
         .enumerate()
         .map(|(index, entry)| {
             let is_selected = selected == Some(index);
             let is_active = state.is_active_guild_entry(entry);
-            styled_list_item(
-                match entry {
-                    GuildPaneEntry::DirectMessages => {
-                        let base_style = selected_text_style(
-                            is_selected,
-                            active_text_style(
-                                is_active,
-                                theme::current().style(theme::HighlightGroup::Strong),
-                            ),
-                        );
-                        let unread_count = state.direct_message_unread_count();
-                        let badge = (unread_count > 0)
-                            .then(|| {
-                                notification_count_badge(ChannelUnreadState::Notified(
-                                    u32::try_from(unread_count).unwrap_or(u32::MAX),
-                                ))
-                            })
-                            .map(|badge| selected_text_span(is_selected, badge));
-                        let badge_width =
-                            badge.as_ref().map(|span| span.content.width()).unwrap_or(0);
-                        let label_width = max_width.saturating_sub(badge_width);
-                        let mut spans = vec![selection_marker(is_selected)];
-                        if let Some(badge) = badge {
-                            spans.push(badge);
-                        }
-                        spans.push(Span::styled(
-                            truncate_display_width_from(
-                                entry.label(),
-                                horizontal_scroll,
-                                label_width,
-                            ),
-                            base_style,
-                        ));
-                        Line::from(spans)
+            let (first, second) = match entry {
+                GuildPaneEntry::DirectMessages => {
+                    let style = selected_text_style(
+                        is_selected,
+                        active_text_style(
+                            is_active,
+                            theme::current().style(theme::HighlightGroup::Strong),
+                        ),
+                    );
+                    let mut first = vec![selection_marker(is_selected), fallback("DM", style)];
+                    if let Some(badge) = direct_message_badge(state, is_selected) {
+                        first.push(badge);
                     }
-                    GuildPaneEntry::FolderHeader { folder, collapsed } => {
-                        let arrow = if *collapsed { "▶ " } else { "▼ " };
-                        let icon = if *collapsed { "📁" } else { "📂" };
-                        let folder_style = folder_style(folder.color);
-                        let label = folder.name.as_deref().unwrap_or_default();
-                        let title = if label.is_empty() {
-                            icon.to_owned()
-                        } else {
-                            format!("{icon} {label}")
-                        };
-                        let label_width = max_width.saturating_sub(arrow.width());
-                        let arrow_style =
-                            selected_discord_text_style(is_selected, folder_style, folder.color);
-                        let title_style = selected_discord_text_style(
-                            is_selected,
-                            theme::current().apply(theme::HighlightGroup::Strong, folder_style),
-                            folder.color,
-                        );
+                    (Line::from(first), Line::from(""))
+                }
+                GuildPaneEntry::FolderHeader { folder, collapsed } => {
+                    let arrow = if *collapsed { "▶ " } else { "▼ " };
+                    let icon = if *collapsed { "📁" } else { "📂" };
+                    let style = folder_style(folder.color);
+                    (
                         Line::from(vec![
                             selection_marker(is_selected),
-                            Span::styled(arrow, arrow_style),
                             Span::styled(
-                                truncate_display_width_from(&title, horizontal_scroll, label_width),
-                                title_style,
+                                arrow,
+                                selected_discord_text_style(is_selected, style, folder.color),
                             ),
-                        ])
-                    }
-                    GuildPaneEntry::Guild {
-                        state: guild,
-                        branch,
-                    } => {
-                        let prefix = branch.prefix();
-                        let base_style = active_text_style(is_active, Style::default());
-                        let is_muted = dashboard.guild_notification_muted(guild.id);
-                        let unread = dashboard.sidebar_guild_unread(guild.id);
-                        let (badge, mut name_style) = if is_active {
-                            let (badge, _) = channel_unread_decoration(unread, base_style, false);
-                            (badge, base_style)
-                        } else if unread == ChannelUnreadState::Seen {
-                            (None, base_style)
-                        } else {
-                            channel_unread_decoration(unread, base_style, false)
-                        };
-                        if is_muted {
-                            name_style =
-                                theme::current().apply(theme::HighlightGroup::Muted, name_style);
-                        }
-                        name_style = selected_text_style(is_selected, name_style);
-                        let badge = badge.map(|badge| selected_text_span(is_selected, badge));
-                        let badge_width =
-                            badge.as_ref().map(|span| span.content.width()).unwrap_or(0);
-                        let label_width = max_width
-                            .saturating_sub(prefix.width())
-                            .saturating_sub(badge_width);
-                        let mut spans = vec![
-                            selection_marker(is_selected),
                             Span::styled(
-                                prefix,
-                                theme::current().style(theme::HighlightGroup::Decoration),
+                                icon,
+                                selected_discord_text_style(is_selected, style, folder.color),
                             ),
-                        ];
-                        if let Some(badge) = badge {
-                            spans.push(badge);
-                        }
-                        spans.push(Span::styled(
-                            truncate_display_width_from(
-                                guild.name.as_str(),
-                                horizontal_scroll,
-                                label_width,
-                            ),
-                            name_style,
-                        ));
-                        Line::from(spans)
+                        ]),
+                        Line::from(""),
+                    )
+                }
+                GuildPaneEntry::Guild {
+                    state: guild,
+                    branch,
+                } => {
+                    let mut style = active_text_style(is_active, Style::default());
+                    if state.guild_notification_muted(guild.id) {
+                        style = theme::current().apply(theme::HighlightGroup::Muted, style);
                     }
-                },
-                is_selected,
-            )
+                    let style = selected_text_style(is_selected, style);
+                    let badge = guild_badge(state, guild, is_active, is_selected);
+                    let mut first = vec![
+                        selection_marker(is_selected),
+                        Span::styled(
+                            branch.prefix(),
+                            theme::current().style(theme::HighlightGroup::Decoration),
+                        ),
+                        fallback(&initial(&guild.name), style),
+                    ];
+                    if let Some(badge) = badge {
+                        first.push(badge);
+                    }
+                    (
+                        Line::from(first),
+                        Line::from(vec![
+                            selection_marker(false),
+                            Span::raw(" ".repeat(COMPACT_ICON_WIDTH as usize)),
+                        ]),
+                    )
+                }
+            };
+            ListItem::new(vec![
+                selected_row_line(first, is_selected),
+                selected_row_line(second, is_selected),
+            ])
+            .style(selected_row_style(is_selected))
         })
-        .collect();
-
-    let list = List::new(items);
-    frame.render_widget(list, list_area);
+        .collect::<Vec<_>>();
+    frame.render_widget(List::new(items), list_area);
 
     render_pane_filter_bar_with_cursor(
         frame,
@@ -148,12 +99,110 @@ pub(in crate::tui::ui) fn render_guilds(frame: &mut Frame, area: Rect, state: &D
         state.guild_pane_filter_cursor(),
         focused,
     );
-
     render_vertical_scrollbar(
         frame,
         list_area,
         state.guild_scroll(),
-        list_area.height as usize,
-        entry_count,
+        list_area.height as usize / GUILD_PANE_ENTRY_HEIGHT,
+        state.guild_pane_filtered_entries().len(),
     );
+}
+
+fn guild_icon_area(
+    list_area: Rect,
+    index: usize,
+    branch: GuildBranch,
+    marker_width: u16,
+    horizontal_scroll: usize,
+) -> Option<Rect> {
+    let x = list_area
+        .x
+        .saturating_add(marker_width)
+        .saturating_add(branch.prefix().width() as u16)
+        .saturating_sub(u16::try_from(horizontal_scroll).unwrap_or(u16::MAX));
+    let y = list_area.y.saturating_add(
+        u16::try_from(index)
+            .unwrap_or(u16::MAX)
+            .saturating_mul(GUILD_PANE_ENTRY_HEIGHT as u16),
+    );
+    let right = x.saturating_add(COMPACT_ICON_WIDTH);
+    let list_right = list_area.x.saturating_add(list_area.width);
+    let clipped_x = x.max(list_area.x);
+    let clipped_right = right.min(list_right);
+    (clipped_x < clipped_right).then(|| {
+        Rect::new(
+            clipped_x,
+            y,
+            clipped_right.saturating_sub(clipped_x),
+            COMPACT_ICON_HEIGHT,
+        )
+    })
+}
+
+fn initial(name: &str) -> String {
+    name.chars()
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_else(|| "?".to_owned())
+}
+
+fn fallback(label: &str, style: Style) -> Span<'static> {
+    let width = label.width();
+    let left = (COMPACT_ICON_WIDTH as usize).saturating_sub(width) / 2;
+    Span::styled(
+        format!(
+            "{}{}{}",
+            " ".repeat(left),
+            label,
+            " ".repeat((COMPACT_ICON_WIDTH as usize).saturating_sub(left + width))
+        ),
+        style,
+    )
+}
+
+fn guild_badge(
+    state: &DashboardState,
+    guild: &crate::discord::GuildState,
+    active: bool,
+    selected: bool,
+) -> Option<Span<'static>> {
+    let unread = state.sidebar_guild_unread(guild.id);
+    let (badge, _) = if active {
+        channel_unread_decoration(unread, Style::default(), false)
+    } else if unread == ChannelUnreadState::Seen {
+        (None, Style::default())
+    } else {
+        channel_unread_decoration(unread, Style::default(), false)
+    };
+    badge.map(|badge| selected_text_span(selected, badge))
+}
+
+fn direct_message_badge(state: &DashboardState, selected: bool) -> Option<Span<'static>> {
+    let count = state.direct_message_unread_count();
+    (count > 0).then(|| {
+        let count = u32::try_from(count).unwrap_or(u32::MAX);
+        selected_text_span(
+            selected,
+            notification_count_badge(ChannelUnreadState::Notified(count)),
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guild_icon_area_is_four_by_two_and_clipped_to_list() {
+        let list = Rect::new(10, 4, 12, 8);
+        assert_eq!(
+            guild_icon_area(list, 1, GuildBranch::None, 2, 0),
+            Some(Rect::new(12, 6, 4, 2))
+        );
+        assert_eq!(
+            guild_icon_area(list, 1, GuildBranch::None, 2, 5),
+            Some(Rect::new(10, 6, 1, 2))
+        );
+        assert_eq!(guild_icon_area(list, 1, GuildBranch::None, 2, 7), None);
+    }
 }

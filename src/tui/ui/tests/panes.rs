@@ -431,7 +431,7 @@ fn server_pane_shows_direct_message_unread_channel_count() {
 }
 
 #[test]
-fn selected_muted_server_name_uses_selection_emphasis() {
+fn selected_muted_server_icon_uses_selection_emphasis_without_name() {
     let guild_id = Id::new(1);
     let channel_id = Id::new(2);
     let mut state = DashboardState::new();
@@ -464,7 +464,11 @@ fn selected_muted_server_name_uses_selection_emphasis() {
         let text = (0..buffer.area.width)
             .map(|col| buffer[(col, row)].symbol().to_owned())
             .collect::<String>();
-        if let Some(name_col) = text.find("guild") {
+        assert!(
+            !text.contains("guild"),
+            "guild name must not render: {text}"
+        );
+        if let Some(name_col) = text.find('G') {
             assert!(
                 !buffer[(name_col as u16, row)]
                     .modifier
@@ -475,7 +479,7 @@ fn selected_muted_server_name_uses_selection_emphasis() {
         }
     }
 
-    assert!(checked, "muted guild row should render guild name");
+    assert!(checked, "guild fallback initial should render");
 }
 
 #[test]
@@ -1030,20 +1034,23 @@ fn pane_filters_keep_content_width_when_active() {
     state.set_guild_view_height(4);
 
     let normal_rows = rendered_guild_rows(&state, 20, 6);
+    assert!(!normal_rows.iter().any(|row| row.contains("This")));
     let normal_server_row = normal_rows
         .iter()
-        .find(|row| row.contains("This"))
-        .expect("server row should render")
+        .find(|row| row.contains('T'))
+        .expect("server icon fallback should render")
         .clone();
 
     state.open_guild_pane_filter();
     state.set_guild_view_height(3);
 
-    let filtered_rows = rendered_guild_rows(&state, 20, 6);
+    // Guild entries occupy two terminal rows to keep room for compact icons.
+    let filtered_rows = rendered_guild_rows(&state, 20, 8);
+    assert!(!filtered_rows.iter().any(|row| row.contains("This")));
     let filtered_server_row = filtered_rows
         .iter()
-        .find(|row| row.contains("This"))
-        .expect("server row should render while filtering")
+        .find(|row| row.contains('T'))
+        .expect("server icon fallback should render while filtering")
         .clone();
 
     assert_eq!(

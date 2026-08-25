@@ -780,6 +780,8 @@ impl GuildBranch {
     }
 }
 
+pub const GUILD_PANE_ENTRY_HEIGHT: usize = 2;
+
 impl GuildPaneEntry<'_> {
     pub fn guild_state(&self) -> Option<&GuildState> {
         match self {

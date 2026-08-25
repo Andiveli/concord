@@ -1,6 +1,6 @@
 use ratatui::layout::Rect;
 
-use super::super::state::{DashboardState, FocusPane};
+use super::super::state::{DashboardState, FocusPane, GUILD_PANE_ENTRY_HEIGHT};
 use super::{
     channel_pane_header_height,
     layout::{dashboard_areas, message_areas},
@@ -124,7 +124,11 @@ fn pane_row_mouse_target(
     if rect_contains(list_area, column, row) {
         return Some(MouseTarget::PaneRow {
             pane,
-            row: row.saturating_sub(list_area.y) as usize,
+            row: if pane == FocusPane::Guilds {
+                row.saturating_sub(list_area.y) as usize / GUILD_PANE_ENTRY_HEIGHT
+            } else {
+                row.saturating_sub(list_area.y) as usize
+            },
         });
     }
     Some(MouseTarget::Pane(pane))

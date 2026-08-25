@@ -19,10 +19,10 @@ use super::super::{
     message::format::{format_attachment_summary, wrap_text_lines},
     state::{
         ChannelPaneEntry, ChannelPaneRow, CommandPickerEntry, ComposerLock, DashboardState,
-        EmojiPickerEntry, FocusPane, GuildPaneEntry, LocalUploadPreviewView,
-        MAX_MENTION_PICKER_VISIBLE, MemberEntry, MemberGroup, MentionPickerEntry,
-        MentionPickerTarget, apply_discord_foreground, folder_style, normal_text_style,
-        presence_marker, primary_compact_activity,
+        EmojiPickerEntry, FocusPane, GUILD_PANE_ENTRY_HEIGHT, GuildBranch, GuildPaneEntry,
+        LocalUploadPreviewView, MAX_MENTION_PICKER_VISIBLE, MemberEntry, MemberGroup,
+        MentionPickerEntry, MentionPickerTarget, apply_discord_foreground, folder_style,
+        normal_text_style, presence_marker, primary_compact_activity,
     },
     text::{
         EmojiImageSize, format_byte_size, sanitize_for_display_width, truncate_display_width,
@@ -39,8 +39,8 @@ use super::{
         vertical_scrollbar_visible,
     },
     panel_block, panel_block_line, render_vertical_scrollbar, selected_discord_text_style,
-    selected_presence_style, selected_row_line, selected_text_span, selected_text_style,
-    selection_marker, selection_marker_width, styled_list_item, theme,
+    selected_presence_style, selected_row_line, selected_row_style, selected_text_span,
+    selected_text_style, selection_marker, selection_marker_width, styled_list_item, theme,
     types::{EmojiImage, MessageAreas},
 };
 

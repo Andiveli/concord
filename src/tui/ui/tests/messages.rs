@@ -47,12 +47,16 @@ fn server_pane_shows_guild_mention_badge() {
         .collect::<Vec<_>>();
 
     assert!(server_rows.iter().any(|row| row.contains("(2)")));
+    assert!(
+        server_rows.iter().all(|row| !row.contains("guild")),
+        "guild names must not render in the server sidebar"
+    );
     let row = server_rows
         .iter()
-        .position(|row| row.contains("(2)") && row.contains("guild"))
+        .position(|row| row.contains("(2") && row.contains('G'))
         .expect("selected mentioned guild row");
     let badge_start = server_rows[row].find("(2)").expect("mention badge");
-    let name_start = server_rows[row].find("guild").expect("guild name");
+    let name_start = server_rows[row].find('G').expect("guild fallback initial");
     let badge_col = server_rows[row][..badge_start].width();
     let name_col = server_rows[row][..name_start].width();
     assert_eq!(
@@ -108,10 +112,7 @@ fn active_server_mention_badge_keeps_active_name_style() {
             .map(|col| buffer[(col, row)].symbol().to_owned())
             .collect::<String>();
         if let Some(badge_col) = text.find("(2)") {
-            let name_col = text[badge_col..]
-                .find('g')
-                .map(|offset| badge_col + offset)
-                .expect("guild name starts with g after mention badge");
+            let name_col = text.find('G').expect("guild fallback initial");
             assert_eq!(
                 buffer[(badge_col as u16, row)].fg,
                 theme::current().foreground(theme::HighlightGroup::MentionBadge)
@@ -129,7 +130,7 @@ fn active_server_mention_badge_keeps_active_name_style() {
 
     assert!(
         checked,
-        "active guild row should include mention badge and guild name"
+        "active guild row should include mention badge and fallback initial"
     );
 }
 
