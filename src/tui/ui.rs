@@ -65,13 +65,14 @@ use self::layout::{
 };
 use self::message::list::{MessageMedia, render_messages};
 use self::panes::{
-    channel_pane_header_height, render_channels, render_guilds, render_header, render_members,
+    channel_pane_header_height, render_channels, render_guilds_with_icons, render_header,
+    render_members,
 };
 #[cfg(test)]
 use self::panes::{
     composer_cursor_position, composer_lines, composer_lines_with_loaded_custom_emoji_urls,
     composer_text, emoji_picker_lines, member_display_label, member_name_style,
-    mention_picker_lines_for_test, primary_activity_summary, render_composer,
+    mention_picker_lines_for_test, primary_activity_summary, render_composer, render_guilds,
     verification_composer_text,
 };
 #[cfg(test)]
@@ -129,17 +130,11 @@ use self::{
 };
 use super::theme;
 
+pub(in crate::tui) use self::panes::guild_icon_targets;
 pub(in crate::tui) use self::popups::user_profile_popup_avatar_viewport;
-pub use self::types::GuildIconImage;
-use crate::tui::media::GuildIconTarget;
-pub(in crate::tui) fn guild_icon_targets(
-    _area: Rect,
-    _state: &DashboardState,
-) -> Vec<GuildIconTarget> {
-    Vec::new()
-}
 #[cfg(test)]
 pub(in crate::tui::ui) use self::popups::{downloads_popup_area, downloads_popup_lines};
+pub use self::types::GuildIconImage;
 pub fn sync_view_heights(area: Rect, state: &mut DashboardState) {
     let areas = dashboard_areas(area, state);
     sync_composer_viewport(message_composer_area(areas.messages, state), state);
@@ -340,7 +335,7 @@ pub(in crate::tui) fn render_with_message_viewport_plan(
 
     render_header(frame, areas.header, state);
     if state.is_pane_visible(FocusPane::Guilds) {
-        render_guilds(frame, areas.guilds, state);
+        render_guilds_with_icons(frame, areas.guilds, state, &render_data.guild_icons);
     }
     if state.is_pane_visible(FocusPane::Channels) {
         render_channels(frame, areas.channels, state, &render_data.emoji_images);

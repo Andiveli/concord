@@ -41,7 +41,7 @@ use super::{
     panel_block, panel_block_line, render_vertical_scrollbar, selected_discord_text_style,
     selected_presence_style, selected_row_line, selected_row_style, selected_text_span,
     selected_text_style, selection_marker, selection_marker_width, styled_list_item, theme,
-    types::{EmojiImage, MessageAreas},
+    types::{EmojiImage, GuildIconImage, MessageAreas},
 };
 
 mod channels;
@@ -61,7 +61,10 @@ pub(super) use composer::{
     composer_cursor_position, composer_lines, composer_lines_with_loaded_custom_emoji_urls,
     emoji_picker_lines, mention_picker_lines_for_test, verification_composer_text,
 };
+pub(in crate::tui) use guilds::guild_icon_targets;
+#[cfg(test)]
 pub(super) use guilds::render_guilds;
+pub(super) use guilds::render_guilds_with_icons;
 pub(super) use header::render_header;
 pub(super) use members::render_members;
 #[cfg(test)]

@@ -1,9 +1,16 @@
+use crate::{
+    discord::guild_icon_url,
+    tui::media::{AVATAR_PREVIEW_HEIGHT, AVATAR_PREVIEW_WIDTH, GuildIconTarget},
+};
+
 use super::*;
 
-const COMPACT_ICON_WIDTH: u16 = 4;
-const COMPACT_ICON_HEIGHT: u16 = 2;
-
-pub(in crate::tui::ui) fn render_guilds(frame: &mut Frame, area: Rect, state: &DashboardState) {
+pub(in crate::tui::ui) fn render_guilds_with_icons(
+    frame: &mut Frame,
+    area: Rect,
+    state: &DashboardState,
+    guild_icons: &[GuildIconImage<'_>],
+) {
     let focused = state.focus() == FocusPane::Guilds;
     let filter_query = state.guild_pane_filter_query();
     let block = panel_block("", focused);
@@ -12,6 +19,8 @@ pub(in crate::tui::ui) fn render_guilds(frame: &mut Frame, area: Rect, state: &D
     let (list_area, filter_area) = split_pane_filter_area(inner, filter_query.is_some());
     let entries = state.visible_guild_pane_entries();
     let selected = state.focused_guild_selection();
+    let marker_width = selection_marker(false).content.width() as u16;
+    let horizontal_scroll = state.guild_horizontal_scroll();
 
     let items = entries
         .iter()
@@ -71,14 +80,16 @@ pub(in crate::tui::ui) fn render_guilds(frame: &mut Frame, area: Rect, state: &D
                         ),
                         fallback(&initial(&guild.name), style),
                     ];
-                    if let Some(badge) = badge {
+                    if guild.icon_hash.is_none()
+                        && let Some(badge) = badge
+                    {
                         first.push(badge);
                     }
                     (
                         Line::from(first),
                         Line::from(vec![
                             selection_marker(false),
-                            Span::raw(" ".repeat(COMPACT_ICON_WIDTH as usize)),
+                            Span::raw(" ".repeat(AVATAR_PREVIEW_WIDTH as usize)),
                         ]),
                     )
                 }
@@ -91,6 +102,43 @@ pub(in crate::tui::ui) fn render_guilds(frame: &mut Frame, area: Rect, state: &D
         })
         .collect::<Vec<_>>();
     frame.render_widget(List::new(items), list_area);
+
+    for (index, entry) in entries.iter().enumerate() {
+        let GuildPaneEntry::Guild {
+            state: guild,
+            branch,
+        } = entry
+        else {
+            continue;
+        };
+        let Some(icon_area) =
+            guild_icon_area(list_area, index, *branch, marker_width, horizontal_scroll)
+        else {
+            continue;
+        };
+        if let Some(url) = guild
+            .icon_hash
+            .as_deref()
+            .map(|hash| guild_icon_url(guild.id, hash))
+            && let Some(icon) = guild_icons.iter().find(|icon| icon.url == url)
+        {
+            frame.render_widget(RatatuiImage::new(icon.protocol), icon.area);
+        }
+        if guild.icon_hash.is_some()
+            && let Some(badge) = guild_badge(
+                state,
+                guild,
+                state.is_active_guild_entry(entry),
+                selected == Some(index),
+            )
+        {
+            let width = badge.content.width();
+            frame.render_widget(
+                Paragraph::new(Line::from(badge)),
+                guild_icon_badge_area(icon_area, width),
+            );
+        }
+    }
 
     render_pane_filter_bar_with_cursor(
         frame,
@@ -106,6 +154,54 @@ pub(in crate::tui::ui) fn render_guilds(frame: &mut Frame, area: Rect, state: &D
         list_area.height as usize / GUILD_PANE_ENTRY_HEIGHT,
         state.guild_pane_filtered_entries().len(),
     );
+}
+
+#[cfg(test)]
+pub(in crate::tui::ui) fn render_guilds(frame: &mut Frame, area: Rect, state: &DashboardState) {
+    render_guilds_with_icons(frame, area, state, &[]);
+}
+
+pub(in crate::tui) fn guild_icon_targets(
+    area: Rect,
+    state: &DashboardState,
+) -> Vec<GuildIconTarget> {
+    let block = panel_block("", state.focus() == FocusPane::Guilds);
+    let (list_area, _) =
+        split_pane_filter_area(block.inner(area), state.guild_pane_filter_query().is_some());
+    let marker_width = selection_marker(false).content.width() as u16;
+    let horizontal_scroll = state.guild_horizontal_scroll();
+    state
+        .visible_guild_pane_entries()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let GuildPaneEntry::Guild {
+                state: guild,
+                branch,
+            } = entry
+            else {
+                return None;
+            };
+            let hash = guild.icon_hash.as_deref()?;
+            Some(GuildIconTarget {
+                url: guild_icon_url(guild.id, hash),
+                area: guild_icon_area(list_area, index, branch, marker_width, horizontal_scroll)?,
+            })
+        })
+        .collect()
+}
+
+fn guild_icon_badge_area(icon_area: Rect, badge_width: usize) -> Rect {
+    Rect::new(
+        icon_area.x,
+        icon_area
+            .y
+            .saturating_add(icon_area.height.saturating_sub(1)),
+        u16::try_from(badge_width)
+            .unwrap_or(u16::MAX)
+            .min(icon_area.width),
+        1,
+    )
 }
 
 fn guild_icon_area(
@@ -125,7 +221,7 @@ fn guild_icon_area(
             .unwrap_or(u16::MAX)
             .saturating_mul(GUILD_PANE_ENTRY_HEIGHT as u16),
     );
-    let right = x.saturating_add(COMPACT_ICON_WIDTH);
+    let right = x.saturating_add(AVATAR_PREVIEW_WIDTH);
     let list_right = list_area.x.saturating_add(list_area.width);
     let clipped_x = x.max(list_area.x);
     let clipped_right = right.min(list_right);
@@ -134,7 +230,7 @@ fn guild_icon_area(
             clipped_x,
             y,
             clipped_right.saturating_sub(clipped_x),
-            COMPACT_ICON_HEIGHT,
+            AVATAR_PREVIEW_HEIGHT,
         )
     })
 }
@@ -148,13 +244,13 @@ fn initial(name: &str) -> String {
 
 fn fallback(label: &str, style: Style) -> Span<'static> {
     let width = label.width();
-    let left = (COMPACT_ICON_WIDTH as usize).saturating_sub(width) / 2;
+    let left = (AVATAR_PREVIEW_WIDTH as usize).saturating_sub(width) / 2;
     Span::styled(
         format!(
             "{}{}{}",
             " ".repeat(left),
             label,
-            " ".repeat((COMPACT_ICON_WIDTH as usize).saturating_sub(left + width))
+            " ".repeat((AVATAR_PREVIEW_WIDTH as usize).saturating_sub(left + width))
         ),
         style,
     )
