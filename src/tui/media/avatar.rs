@@ -4,12 +4,13 @@ use ratatui_image::picker::Picker;
 
 use crate::{
     discord::{AppCommand, AppEvent, ProfileAvatarUpload},
-    tui::ui::AvatarImage,
+    tui::ui::{AvatarImage, GuildIconImage},
 };
 
 use super::{
-    AVATAR_PREVIEW_HEIGHT, AVATAR_PREVIEW_WIDTH, AvatarTarget, MediaProtocolRenderSpec,
-    PROFILE_POPUP_AVATAR_HEIGHT, PROFILE_POPUP_AVATAR_WIDTH, avatar_preview_url,
+    AVATAR_PREVIEW_HEIGHT, AVATAR_PREVIEW_WIDTH, AvatarTarget, GuildIconTarget,
+    MediaProtocolRenderSpec, PROFILE_POPUP_AVATAR_HEIGHT, PROFILE_POPUP_AVATAR_WIDTH,
+    avatar_preview_url,
     cache::{MediaImageCacheCore, MediaImageCacheEntry, RenderProtocolCache},
     decode::{DecodedMediaImage, MediaImageDecodeKey, MediaImageDecodeRequest},
     protocol_job::{MediaProtocolBuildJob, MediaProtocolBuildResult, MediaProtocolBuildTarget},
@@ -93,6 +94,16 @@ impl AvatarProtocolKey {
         }
     }
 
+    pub(super) fn guild_icon() -> Self {
+        Self {
+            preview_width: AVATAR_PREVIEW_WIDTH,
+            preview_height: AVATAR_PREVIEW_HEIGHT,
+            visible_preview_height: AVATAR_PREVIEW_HEIGHT,
+            top_clip_rows: 0,
+            circular: true,
+        }
+    }
+
     pub(super) fn render_spec(self) -> MediaProtocolRenderSpec {
         MediaProtocolRenderSpec {
             width: self.preview_width,
@@ -169,10 +180,15 @@ impl AvatarImageCache {
     pub(in crate::tui) fn render_state_with_popup(
         &mut self,
         targets: &[AvatarTarget],
+        guild_targets: &[GuildIconTarget],
         popup_url: Option<&str>,
         popup_clip: Option<(u16, u16)>,
         circular: bool,
-    ) -> (Vec<AvatarImage<'_>>, Option<AvatarImage<'_>>) {
+    ) -> (
+        Vec<AvatarImage<'_>>,
+        Vec<GuildIconImage<'_>>,
+        Option<AvatarImage<'_>>,
+    ) {
         for target in targets {
             let url = avatar_preview_url(&target.url, AVATAR_PREVIEW_WIDTH, AVATAR_PREVIEW_HEIGHT);
             self.cache.touch(&url);
@@ -187,7 +203,7 @@ impl AvatarImageCache {
 
         {
             let Some(picker) = self.picker.as_ref() else {
-                return (Vec::new(), None);
+                return (Vec::new(), Vec::new(), None);
             };
 
             for target in targets {
@@ -244,6 +260,36 @@ impl AvatarImageCache {
             }
         }
 
+        for target in guild_targets {
+            self.cache.touch(&target.url);
+        }
+        if let Some(picker) = self.picker.as_ref() {
+            for target in guild_targets {
+                let Some(AvatarImageEntry::Ready {
+                    generation,
+                    image,
+                    protocols,
+                    ..
+                }) = self.cache.entries.get_mut(&target.url)
+                else {
+                    continue;
+                };
+                let key = AvatarFrameProtocolKey {
+                    layout: AvatarProtocolKey::guild_icon(),
+                    frame_index: image.current_frame_index(),
+                };
+                if protocols.request_build(&key) {
+                    self.protocol_jobs.push(MediaProtocolBuildJob::avatar(
+                        target.url.clone(),
+                        *generation,
+                        key,
+                        picker.clone(),
+                        image.current_frame_shared(),
+                    ));
+                }
+            }
+        }
+
         let avatars = targets
             .iter()
             .filter_map(|target| {
@@ -291,20 +337,56 @@ impl AvatarImageCache {
                 })
         });
 
-        (avatars, popup_avatar)
-    }
-
-    pub(in crate::tui) fn next_requests(&mut self, targets: &[AvatarTarget]) -> Vec<AppCommand> {
-        let intents = targets
+        let guild_icons = guild_targets
             .iter()
-            .take(MAX_AVATAR_IMAGE_CACHE_ENTRIES)
             .filter_map(|target| {
-                let url =
-                    avatar_preview_url(&target.url, AVATAR_PREVIEW_WIDTH, AVATAR_PREVIEW_HEIGHT);
-                self.next_request_for_cache_url(&url)
+                let AvatarImageEntry::Ready {
+                    image, protocols, ..
+                } = self.cache.entries.get(&target.url)?
+                else {
+                    return None;
+                };
+                let key = AvatarFrameProtocolKey {
+                    layout: AvatarProtocolKey::guild_icon(),
+                    frame_index: image.current_frame_index(),
+                };
+                protocols
+                    .get_or_last_matching(&key, |candidate| candidate.layout == key.layout)
+                    .map(|protocol| GuildIconImage {
+                        url: target.url.clone(),
+                        area: target.area,
+                        protocol,
+                    })
             })
             .collect();
-        self.prune_to_limit(targets);
+        (avatars, guild_icons, popup_avatar)
+    }
+
+    #[cfg(test)]
+    pub(in crate::tui) fn next_requests(&mut self, targets: &[AvatarTarget]) -> Vec<AppCommand> {
+        self.next_requests_with_guilds(targets, &[])
+    }
+
+    pub(in crate::tui) fn next_requests_with_guilds(
+        &mut self,
+        targets: &[AvatarTarget],
+        guild_targets: &[GuildIconTarget],
+    ) -> Vec<AppCommand> {
+        let intents: Vec<AppCommand> = guild_targets
+            .iter()
+            .map(|target| target.url.clone())
+            .chain(
+                targets
+                    .iter()
+                    .take(MAX_AVATAR_IMAGE_CACHE_ENTRIES)
+                    .map(|target| {
+                        avatar_preview_url(&target.url, AVATAR_PREVIEW_WIDTH, AVATAR_PREVIEW_HEIGHT)
+                    }),
+            )
+            .take(MAX_AVATAR_IMAGE_CACHE_ENTRIES)
+            .filter_map(|url| self.next_request_for_cache_url(&url))
+            .collect();
+        self.prune_to_limit_with_guilds(targets, guild_targets);
         intents
     }
 
@@ -448,6 +530,28 @@ impl AvatarImageCache {
         }
     }
 
+    pub(in crate::tui) fn sync_guild_icon_visibility(
+        &mut self,
+        targets: &[GuildIconTarget],
+        now: Instant,
+    ) {
+        let visible = targets
+            .iter()
+            .map(|target| target.url.as_str())
+            .collect::<HashSet<_>>();
+        for (url, entry) in &mut self.cache.entries {
+            let AvatarImageEntry::Ready {
+                image, protocols, ..
+            } = entry
+            else {
+                continue;
+            };
+            if visible.contains(url.as_str()) && !protocols.is_empty() {
+                image.start_animation(now);
+            }
+        }
+    }
+
     pub(in crate::tui) fn pause_animations(&mut self) {
         self.cache.pause_animations();
     }
@@ -487,6 +591,14 @@ impl AvatarImageCache {
     }
 
     pub(super) fn prune_to_limit(&mut self, targets: &[AvatarTarget]) {
+        self.prune_to_limit_with_guilds(targets, &[]);
+    }
+
+    fn prune_to_limit_with_guilds(
+        &mut self,
+        targets: &[AvatarTarget],
+        guild_targets: &[GuildIconTarget],
+    ) {
         let protected = targets
             .iter()
             .take(MAX_AVATAR_IMAGE_CACHE_ENTRIES)
@@ -494,6 +606,7 @@ impl AvatarImageCache {
                 avatar_preview_url(&target.url, AVATAR_PREVIEW_WIDTH, AVATAR_PREVIEW_HEIGHT)
             })
             .chain(self.active_popup_avatar_url.iter().cloned())
+            .chain(guild_targets.iter().map(|target| target.url.clone()))
             .collect::<HashSet<_>>();
         self.cache.prune_to_limits(
             MAX_AVATAR_IMAGE_CACHE_ENTRIES,

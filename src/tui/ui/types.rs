@@ -32,6 +32,12 @@ pub struct AvatarImage<'a> {
     pub protocol: &'a Protocol,
 }
 
+pub struct GuildIconImage<'a> {
+    pub url: String,
+    pub area: Rect,
+    pub protocol: &'a Protocol,
+}
+
 pub struct EmojiImage<'a> {
     pub url: String,
     pub protocol: &'a Protocol,

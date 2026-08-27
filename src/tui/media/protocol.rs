@@ -8,8 +8,8 @@ use ratatui_image::{
 use crate::tui::text::EmojiImageSize;
 use crate::{config::ImageProtocolPreference, logging};
 
-pub(super) const AVATAR_PREVIEW_WIDTH: u16 = 4;
-pub(super) const AVATAR_PREVIEW_HEIGHT: u16 = 2;
+pub(in crate::tui) const AVATAR_PREVIEW_WIDTH: u16 = 4;
+pub(in crate::tui) const AVATAR_PREVIEW_HEIGHT: u16 = 2;
 pub(in crate::tui) const PROFILE_POPUP_AVATAR_WIDTH: u16 = 8;
 pub(in crate::tui) const PROFILE_POPUP_AVATAR_HEIGHT: u16 = 4;
 const AVATAR_SOURCE_PIXELS_PER_COLUMN: u64 = 10;
@@ -71,7 +71,11 @@ fn is_iterm_terminal_values(term_program: Option<&str>, lc_terminal: Option<&str
         || lc_terminal.is_some_and(|value| value.contains("iTerm"))
 }
 
-pub(super) fn avatar_preview_url(url: &str, width_columns: u16, height_rows: u16) -> String {
+pub(in crate::tui) fn avatar_preview_url(
+    url: &str,
+    width_columns: u16,
+    height_rows: u16,
+) -> String {
     if !is_discord_avatar_url(url) {
         return url.to_owned();
     }
@@ -313,7 +317,7 @@ fn fit_image_to_canvas(image: &DynamicImage, width: u32, height: u32) -> Dynamic
     canvas
 }
 
-pub(super) fn emoji_protocol(
+pub(in crate::tui) fn emoji_protocol(
     picker: &Picker,
     img: &DynamicImage,
     image_size: EmojiImageSize,

@@ -13,8 +13,8 @@ use crate::{
     tui::{
         commands as command_helpers,
         media::{
-            AvatarImageCache, AvatarTarget, EmojiImageCache, EmojiImageTarget, ImagePreviewCache,
-            ImagePreviewTarget, MediaImageDecodeCache, MediaImageDecodeDelivery,
+            AvatarImageCache, AvatarTarget, EmojiImageCache, EmojiImageTarget, GuildIconTarget,
+            ImagePreviewCache, ImagePreviewTarget, MediaImageDecodeCache, MediaImageDecodeDelivery,
             MediaImageDecodeKey, MediaImageDecodeResult, MediaProtocolBuildResult,
             MediaProtocolBuildTarget, clipped_media_protocol, decode_image_bytes,
             fixed_media_protocol_render_spec, picker_font_size, query_image_picker,
@@ -51,6 +51,7 @@ pub(super) struct DashboardMediaRuntime {
     picker: Option<Picker>,
     image_targets: Vec<ImagePreviewTarget>,
     avatar_targets: Vec<AvatarTarget>,
+    guild_icon_targets: Vec<GuildIconTarget>,
     emoji_targets: Vec<EmojiImageTarget>,
     // Where overlay images sat last frame, so `prepare_frame` can tell which
     // moved/disappeared and need the selective clear pass.
@@ -73,6 +74,7 @@ impl DashboardMediaRuntime {
             picker,
             image_targets: Vec::new(),
             avatar_targets: Vec::new(),
+            guild_icon_targets: Vec::new(),
             emoji_targets: Vec::new(),
             last_placements: FramePlacements::default(),
             current_placements: FramePlacements::default(),
@@ -245,6 +247,7 @@ impl DashboardMediaRuntime {
             ui::avatar_gutter_width(state.show_avatars()),
         );
         self.avatar_targets = visible_avatar_targets_from_plan(state, layout, plan);
+        self.guild_icon_targets = ui::guild_icon_targets(area, state);
         self.emoji_targets = visible_emoji_image_targets(state);
     }
 
@@ -348,6 +351,9 @@ impl DashboardMediaRuntime {
                 ),
             );
         }
+        for target in &self.guild_icon_targets {
+            placements.insert_guild_icon(target.url.clone(), target.area);
+        }
 
         let popup_avatar = self.popup_avatar_url.as_ref().and_then(|url| {
             ui::user_profile_popup_avatar_viewport(area, state)
@@ -383,6 +389,8 @@ impl DashboardMediaRuntime {
             .sync_animation_visibility(&self.image_targets, now);
         self.avatar_images
             .sync_animation_visibility(&self.avatar_targets, now);
+        self.avatar_images
+            .sync_guild_icon_visibility(&self.guild_icon_targets, now);
         self.emoji_images
             .sync_animation_visibility(&self.emoji_targets, now);
     }
@@ -651,20 +659,25 @@ pub(super) fn draw_dashboard_frame(
     let popup_avatar_url = media_runtime.popup_avatar_url.as_deref();
     let popup_avatar_clip = ui::user_profile_popup_avatar_viewport(area, state)
         .map(|(avatar_area, top_clip_rows)| (avatar_area.height, top_clip_rows));
-    let (rendered_avatars, popup_avatar) = media_runtime.avatar_images.render_state_with_popup(
-        &media_runtime.avatar_targets,
-        popup_avatar_url,
-        popup_avatar_clip,
-        state.circular_avatars(),
-    );
+    let (rendered_avatars, rendered_guild_icons, popup_avatar) =
+        media_runtime.avatar_images.render_state_with_popup(
+            &media_runtime.avatar_targets,
+            &media_runtime.guild_icon_targets,
+            popup_avatar_url,
+            popup_avatar_clip,
+            state.circular_avatars(),
+        );
     ui::render_with_message_viewport_plan(
         frame,
         state,
-        image_previews,
-        rendered_avatars,
-        rendered_emojis,
-        popup_avatar,
-        Some(&viewport_plan),
+        ui::DashboardRenderData {
+            image_previews,
+            avatar_images: rendered_avatars,
+            guild_icons: rendered_guild_icons,
+            emoji_images: rendered_emojis,
+            profile_avatar: popup_avatar,
+            message_viewport_plan: Some(&viewport_plan),
+        },
     );
     area
 }
@@ -720,6 +733,17 @@ pub(super) fn clear_image_surfaces_frame(
         })
         .cloned()
         .collect();
+    let unchanged_guild_icons: Vec<GuildIconTarget> = media_runtime
+        .guild_icon_targets
+        .iter()
+        .filter(|target| {
+            media_runtime
+                .placement_diff
+                .unchanged_guild_icons
+                .contains(&target.url)
+        })
+        .cloned()
+        .collect();
 
     let image_previews = media_runtime
         .image_previews
@@ -736,20 +760,25 @@ pub(super) fn clear_image_surfaces_frame(
     };
     let popup_avatar_clip = ui::user_profile_popup_avatar_viewport(area, state)
         .map(|(avatar_area, top_clip_rows)| (avatar_area.height, top_clip_rows));
-    let (rendered_avatars, popup_avatar) = media_runtime.avatar_images.render_state_with_popup(
-        &unchanged_avatars,
-        popup_avatar_url,
-        popup_avatar_clip,
-        state.circular_avatars(),
-    );
+    let (rendered_avatars, rendered_guild_icons, popup_avatar) =
+        media_runtime.avatar_images.render_state_with_popup(
+            &unchanged_avatars,
+            &unchanged_guild_icons,
+            popup_avatar_url,
+            popup_avatar_clip,
+            state.circular_avatars(),
+        );
     ui::render_with_message_viewport_plan(
         frame,
         state,
-        image_previews,
-        rendered_avatars,
-        rendered_emojis,
-        popup_avatar,
-        Some(&viewport_plan),
+        ui::DashboardRenderData {
+            image_previews,
+            avatar_images: rendered_avatars,
+            guild_icons: rendered_guild_icons,
+            emoji_images: rendered_emojis,
+            profile_avatar: popup_avatar,
+            message_viewport_plan: Some(&viewport_plan),
+        },
     );
     area
 }
@@ -784,9 +813,10 @@ pub(super) async fn schedule_media_loads_after_draw(
     send_media_request_commands(
         state,
         commands,
-        media_runtime
-            .avatar_images
-            .next_requests(&media_runtime.avatar_targets),
+        media_runtime.avatar_images.next_requests_with_guilds(
+            &media_runtime.avatar_targets,
+            &media_runtime.guild_icon_targets,
+        ),
         &mut dirty,
     )
     .await;

@@ -24,8 +24,8 @@ pub(super) use protocol_job::{
 #[cfg(test)]
 use targets::image_preview_height_for_dimensions;
 pub(super) use targets::{
-    AvatarTarget, EmojiImageTarget, ImagePreviewTarget, image_preview_album_layout,
-    visible_avatar_targets_from_plan, visible_emoji_image_targets,
+    AvatarTarget, EmojiImageTarget, GuildIconTarget, ImagePreviewTarget,
+    image_preview_album_layout, visible_avatar_targets_from_plan, visible_emoji_image_targets,
     visible_image_preview_targets_from_plan,
 };
 #[cfg(test)]
@@ -34,12 +34,13 @@ pub(super) use targets::{visible_avatar_targets, visible_image_preview_targets};
 pub(in crate::tui) use decode::decode_image_bytes;
 #[cfg(test)]
 use protocol::clipped_media_image;
-use protocol::{AVATAR_PREVIEW_HEIGHT, AVATAR_PREVIEW_WIDTH, avatar_preview_url, emoji_protocol};
+pub(in crate::tui) use protocol::{AVATAR_PREVIEW_HEIGHT, AVATAR_PREVIEW_WIDTH};
 pub(in crate::tui) use protocol::{
     MediaProtocolRenderSpec, clipped_media_protocol, fixed_media_protocol_render_spec,
     picker_font_size, query_image_picker,
 };
 pub(super) use protocol::{PROFILE_POPUP_AVATAR_HEIGHT, PROFILE_POPUP_AVATAR_WIDTH};
+pub(in crate::tui) use protocol::{avatar_preview_url, emoji_protocol};
 
 #[cfg(test)]
 use avatar::{AvatarImageEntry, AvatarProtocolKey, MAX_AVATAR_IMAGE_CACHE_ENTRIES};

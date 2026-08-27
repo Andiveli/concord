@@ -130,6 +130,14 @@ use self::{
 use super::theme;
 
 pub(in crate::tui) use self::popups::user_profile_popup_avatar_viewport;
+pub use self::types::GuildIconImage;
+use crate::tui::media::GuildIconTarget;
+pub(in crate::tui) fn guild_icon_targets(
+    _area: Rect,
+    _state: &DashboardState,
+) -> Vec<GuildIconTarget> {
+    Vec::new()
+}
 #[cfg(test)]
 pub(in crate::tui::ui) use self::popups::{downloads_popup_area, downloads_popup_lines};
 pub fn sync_view_heights(area: Rect, state: &mut DashboardState) {
@@ -289,22 +297,30 @@ pub fn render(
     render_with_message_viewport_plan(
         frame,
         state,
-        image_previews,
-        avatar_images,
-        emoji_images,
-        profile_avatar,
-        None,
+        DashboardRenderData {
+            image_previews,
+            avatar_images,
+            guild_icons: Vec::new(),
+            emoji_images,
+            profile_avatar,
+            message_viewport_plan: None,
+        },
     );
+}
+
+pub(in crate::tui) struct DashboardRenderData<'a> {
+    pub(in crate::tui) image_previews: Vec<ImagePreview<'a>>,
+    pub(in crate::tui) avatar_images: Vec<AvatarImage<'a>>,
+    pub(in crate::tui) guild_icons: Vec<GuildIconImage<'a>>,
+    pub(in crate::tui) emoji_images: Vec<EmojiImage<'a>>,
+    pub(in crate::tui) profile_avatar: Option<AvatarImage<'a>>,
+    pub(in crate::tui) message_viewport_plan: Option<&'a MessageViewportPlan<'a>>,
 }
 
 pub(in crate::tui) fn render_with_message_viewport_plan(
     frame: &mut Frame,
     state: &DashboardState,
-    image_previews: Vec<ImagePreview<'_>>,
-    avatar_images: Vec<AvatarImage>,
-    emoji_images: Vec<EmojiImage<'_>>,
-    profile_avatar: Option<AvatarImage>,
-    message_viewport_plan: Option<&MessageViewportPlan<'_>>,
+    render_data: DashboardRenderData<'_>,
 ) {
     let frame_area = frame.area();
     clear_area(frame, frame_area);
@@ -314,7 +330,7 @@ pub(in crate::tui) fn render_with_message_viewport_plan(
     let popup_area = frame_area;
     let mut inline_image_previews = Vec::new();
     let mut viewer_image_preview = None;
-    for image_preview in image_previews {
+    for image_preview in render_data.image_previews {
         if image_preview.viewer {
             viewer_image_preview = Some(image_preview);
         } else {
@@ -327,7 +343,7 @@ pub(in crate::tui) fn render_with_message_viewport_plan(
         render_guilds(frame, areas.guilds, state);
     }
     if state.is_pane_visible(FocusPane::Channels) {
-        render_channels(frame, areas.channels, state, &emoji_images);
+        render_channels(frame, areas.channels, state, &render_data.emoji_images);
     }
     let media_occlusion_areas = background_media_occlusion_areas(frame.area(), state);
     render_messages(
@@ -336,14 +352,14 @@ pub(in crate::tui) fn render_with_message_viewport_plan(
         state,
         MessageMedia {
             image_previews: inline_image_previews,
-            avatar_images,
-            emoji_images: &emoji_images,
+            avatar_images: render_data.avatar_images,
+            emoji_images: &render_data.emoji_images,
             occlusion_areas: &media_occlusion_areas,
         },
-        message_viewport_plan,
+        render_data.message_viewport_plan,
     );
     if state.is_pane_visible(FocusPane::Members) {
-        render_members(frame, areas.members, state, &emoji_images);
+        render_members(frame, areas.members, state, &render_data.emoji_images);
     }
     render_stream_info(frame, areas.members, state);
     render_guild_action_menu(frame, popup_area, state);
@@ -364,17 +380,23 @@ pub(in crate::tui) fn render_with_message_viewport_plan(
     render_options_popup(frame, popup_area, state);
     render_voice_participant_audio_popup(frame, popup_area, state);
     render_poll_vote_picker(frame, popup_area, state);
-    render_user_profile_popup(frame, popup_area, state, profile_avatar, &emoji_images);
-    render_emoji_reaction_picker(frame, popup_area, state, &emoji_images);
-    render_reaction_users_popup(frame, popup_area, state, &emoji_images);
+    render_user_profile_popup(
+        frame,
+        popup_area,
+        state,
+        render_data.profile_avatar,
+        &render_data.emoji_images,
+    );
+    render_emoji_reaction_picker(frame, popup_area, state, &render_data.emoji_images);
+    render_reaction_users_popup(frame, popup_area, state, &render_data.emoji_images);
     render_attachment_viewer(frame, frame.area(), state, viewer_image_preview);
     render_debug_log_popup(frame, popup_area, state);
     render_keymap_help_popup(frame, popup_area, state);
     render_search_popup(frame, popup_area, state);
     render_forum_post_composer(frame, popup_area, state);
-    render_forum_post_tag_picker(frame, popup_area, state, &emoji_images);
+    render_forum_post_tag_picker(frame, popup_area, state, &render_data.emoji_images);
     render_thread_edit(frame, popup_area, state);
-    render_thread_edit_tag_picker(frame, popup_area, state, &emoji_images);
+    render_thread_edit_tag_picker(frame, popup_area, state, &render_data.emoji_images);
     render_key_sequence_hint(frame, popup_area, state);
     render_downloads_popup(frame, frame.area(), state);
     render_toast(frame, frame.area(), state);

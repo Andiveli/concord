@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use ratatui::layout::Rect;
+
 use crate::{
     config::ImagePreviewQualityPreset,
     discord::{
@@ -77,6 +79,12 @@ pub(in crate::tui) struct AvatarTarget {
     pub(super) visible_height: u16,
     pub(super) top_clip_rows: u16,
     pub(super) url: String,
+}
+
+#[derive(Clone)]
+pub(in crate::tui) struct GuildIconTarget {
+    pub(in crate::tui) url: String,
+    pub(in crate::tui) area: Rect,
 }
 
 impl AvatarTarget {

@@ -33,6 +33,7 @@ pub(super) struct FramePlacements {
     /// vertical fingerprint (row, visible_height, top_clip_rows); avatar x and
     /// width are constant.
     avatars: HashMap<(String, isize), (isize, u16, u16)>,
+    guild_icons: HashMap<String, Rect>,
     /// Profile popup avatar, when shown: (url, circular, area).
     popup_avatar: Option<(String, bool, Rect)>,
 }
@@ -46,6 +47,7 @@ pub(super) struct PlacementDiff {
     pub(super) need_clear: bool,
     pub(super) unchanged_previews: HashSet<ImagePreviewKey>,
     pub(super) unchanged_avatars: HashSet<(String, isize)>,
+    pub(super) unchanged_guild_icons: HashSet<String>,
     pub(super) popup_avatar_unchanged: bool,
 }
 
@@ -65,6 +67,10 @@ impl FramePlacements {
 
     pub(super) fn set_popup_avatar(&mut self, popup: Option<(String, bool, Rect)>) {
         self.popup_avatar = popup;
+    }
+
+    pub(super) fn insert_guild_icon(&mut self, url: String, area: Rect) {
+        self.guild_icons.insert(url, area);
     }
 
     /// Compare this frame's placements against the previous frame's. An overlay
@@ -89,6 +95,13 @@ impl FramePlacements {
                 diff.need_clear = true;
             }
         }
+        for (key, area) in &self.guild_icons {
+            if previous.guild_icons.get(key) == Some(area) {
+                diff.unchanged_guild_icons.insert(key.clone());
+            } else {
+                diff.need_clear = true;
+            }
+        }
 
         // Anything in the previous frame that is gone now must be cleared.
         if previous
@@ -99,6 +112,10 @@ impl FramePlacements {
                 .avatars
                 .keys()
                 .any(|key| !self.avatars.contains_key(key))
+            || previous
+                .guild_icons
+                .keys()
+                .any(|key| !self.guild_icons.contains_key(key))
         {
             diff.need_clear = true;
         }
@@ -203,5 +220,20 @@ mod tests {
         let diff = current.diff(&previous);
         assert!(diff.need_clear);
         assert!(diff.unchanged_previews.is_empty());
+    }
+
+    #[test]
+    fn moved_or_removed_guild_icon_forces_clear() {
+        let mut previous = FramePlacements::default();
+        previous.insert_guild_icon("icon".to_owned(), Rect::new(10, 5, 4, 2));
+
+        let mut current = FramePlacements::default();
+        current.insert_guild_icon("icon".to_owned(), Rect::new(11, 5, 4, 2));
+        let diff = current.diff(&previous);
+        assert!(diff.need_clear);
+        assert!(diff.unchanged_guild_icons.is_empty());
+
+        let diff = FramePlacements::default().diff(&previous);
+        assert!(diff.need_clear);
     }
 }
