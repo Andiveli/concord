@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.1] - 2026-09-29
+
+### Bug Fixes
+
+- _(tui)_ Batch mouse-wheel redraws to reduce scroll lag (#381) in [#381](https://github.com/chojs23/concord/pull/381) by @chojs23
+
+### Documentation
+
+- Remove the powershell one-line installer path by @chojs23
+
+### Features
+
+- Add KLIPY GIF search to the composer (#377) in [#377](https://github.com/chojs23/concord/pull/377) by @TheDutchSmoke
+
+### New Contributors
+
+- @TheDutchSmoke made their first contribution in [#377](https://github.com/chojs23/concord/pull/377)
+
 ## [2.6.0] - 2026-09-22
 
 ### Features
@@ -1166,7 +1184,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- _(tui)_ Detect URLs in reply quotes and forwarded messages (#107) by @SAY-5
+- _(tui)_ Detect URLs in reply quotes and forwarded messages (#107) in [#107](https://github.com/chojs23/concord/pull/107) by @SAY-5
 - Use transient typing display names for TYPING_START by @chojs23
 - Clear typing indicator when a typer sends a message by @chojs23
 - Composer newline fallbacks (#112) in [#112](https://github.com/chojs23/concord/pull/112) by @chojs23
@@ -1188,7 +1206,7 @@ All notable changes to this project will be documented in this file.
 
 ### New Contributors
 
-- @SAY-5 made their first contribution
+- @SAY-5 made their first contribution in [#107](https://github.com/chojs23/concord/pull/107)
 
 ## [2.0.3] - 2026-05-19
 
