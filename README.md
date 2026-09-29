@@ -76,6 +76,10 @@ run the release installer:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chojs23/concord/releases/latest/download/concord-installer.sh | sh
 ```
 
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/chojs23/concord/releases/latest/download/concord-installer.ps1 | iex"
+```
+
 The installer places `concord` under `$CARGO_HOME/bin`.
 
 ### Runtime requirements
@@ -314,6 +318,25 @@ selection.
 
 The composer supports copied file attachments and editing the current draft in
 `$EDITOR`. Pending uploads appear above the input before sending.
+
+#### GIF picker (KLIPY)
+
+Set `KLIPY_API_KEY` before launching Concord, or add an opt-in key to
+`config.toml`:
+
+```toml
+[klipy]
+api_key = "your-klipy-key"
+# Optional: read a different environment variable (takes precedence over api_key).
+# api_key_env = "MY_KLIPY_KEY"
+```
+
+Create a key in the [KLIPY Partner Panel](https://partner.klipy.com/) with **ads
+disabled**. Testing keys allow 100 API requests per hour; request production
+access through the panel when needed. Configure content filtering in the panel.
+See the [KLIPY integration requirements](https://docs.klipy.com/).
+
+`OpenGifPicker` can be remapped in `[keymap.composer]` in `keymap.toml`.
 
 #### Emoji picker
 
@@ -643,6 +666,7 @@ Close = "esc"
 ClearInput = "<C-c>"
 RemoveLastAttachment = "delete"
 TranslateComposer = "<C-t>"
+OpenGifPicker = "<C-g>"
 DeletePreviousChar = "backspace"
 DeletePreviousWord = { keys = ["<A-backspace>", "<C-backspace>", "<C-w>"] }
 DeleteToLineStart = "<C-u>"

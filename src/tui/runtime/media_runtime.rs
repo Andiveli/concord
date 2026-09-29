@@ -48,6 +48,7 @@ pub(super) struct LocalUploadPreviewResult {
 }
 
 pub(super) struct DashboardMediaRuntime {
+    pub(super) klipy: super::klipy::KlipyRuntime,
     image_previews: ImagePreviewCache,
     avatar_images: AvatarImageCache,
     emoji_images: EmojiImageCache,
@@ -77,6 +78,7 @@ impl DashboardMediaRuntime {
 
     fn with_picker(picker: Option<Picker>) -> Self {
         Self {
+            klipy: super::klipy::KlipyRuntime::default(),
             image_previews: ImagePreviewCache::new(picker.clone()),
             avatar_images: AvatarImageCache::new(picker.clone()),
             emoji_images: EmojiImageCache::new(picker.clone()),
@@ -91,6 +93,15 @@ impl DashboardMediaRuntime {
             placement_diff: PlacementDiff::default(),
             popup_avatar_url: None,
         }
+    }
+
+    pub(super) fn sync_klipy(
+        &mut self,
+        state: &mut DashboardState,
+        area: Rect,
+        tx: &mpsc::UnboundedSender<super::klipy::KlipyResult>,
+    ) {
+        self.klipy.sync(state, area, self.picker.clone(), tx);
     }
 
     pub(super) fn schedule_local_upload_previews(
@@ -577,6 +588,7 @@ impl DashboardMediaRuntime {
                 .map(|(avatar_area, _)| (url.clone(), state.circular_avatars(), avatar_area))
         });
         placements.set_popup_avatar(popup_avatar);
+        placements.set_gif_preview(self.klipy.placement(area));
 
         placements
     }
@@ -602,6 +614,7 @@ impl DashboardMediaRuntime {
     }
 
     pub(super) fn sync_animation_visibility(&mut self, now: Instant, animate: AnimatePreviews) {
+        self.klipy.sync_animation_visibility(now, animate);
         self.image_previews
             .sync_animation_visibility(&self.image_targets, now, animate);
         self.avatar_images
@@ -611,6 +624,7 @@ impl DashboardMediaRuntime {
     }
 
     pub(super) fn pause_animations(&mut self) {
+        self.klipy.pause_animation();
         self.image_previews.pause_animations();
         self.avatar_images.pause_animations();
         self.emoji_images.pause_animations();
@@ -666,6 +680,7 @@ impl DashboardMediaRuntime {
 
     pub(super) fn next_animation_deadline(&self) -> Option<Instant> {
         [
+            self.klipy.next_animation_deadline(),
             self.image_previews.next_animation_deadline(),
             self.avatar_images.next_animation_deadline(),
             self.emoji_images.next_animation_deadline(),
@@ -701,7 +716,13 @@ impl DashboardMediaRuntime {
         }
     }
 
-    pub(super) fn advance_animations(&mut self, now: Instant) -> bool {
+    pub(super) fn advance_animations(
+        &mut self,
+        now: Instant,
+        klipy_tx: &mpsc::UnboundedSender<super::klipy::KlipyResult>,
+    ) -> bool {
+        self.klipy
+            .advance_animation(now, self.picker.clone(), klipy_tx);
         let preview_advanced = self.image_previews.advance_animations(now);
         let avatar_advanced = self.avatar_images.advance_animations(now);
         let emoji_advanced = self.emoji_images.advance_animations(now);
@@ -956,7 +977,10 @@ pub(super) fn draw_dashboard_frame(
         image_previews,
         rendered_avatars,
         rendered_emojis,
-        popup_avatar,
+        ui::PopupMedia {
+            profile_avatar: popup_avatar,
+            gif_preview: media_runtime.klipy.preview(),
+        },
         Some(&viewport_plan),
     );
     area
@@ -1041,7 +1065,14 @@ pub(super) fn clear_image_surfaces_frame(
         image_previews,
         rendered_avatars,
         rendered_emojis,
-        popup_avatar,
+        ui::PopupMedia {
+            profile_avatar: popup_avatar,
+            gif_preview: if media_runtime.placement_diff.gif_preview_unchanged {
+                media_runtime.klipy.preview()
+            } else {
+                None
+            },
+        },
         Some(&viewport_plan),
     );
     area
