@@ -76,10 +76,6 @@ run the release installer:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chojs23/concord/releases/latest/download/concord-installer.sh | sh
 ```
 
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/chojs23/concord/releases/latest/download/concord-installer.ps1 | iex"
-```
-
 The installer places `concord` under `$CARGO_HOME/bin`.
 
 ### Runtime requirements
