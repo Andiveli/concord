@@ -118,6 +118,67 @@ fn composer_prompt_line_count_matches_prefixed_multiline_rendering() {
 }
 
 #[test]
+fn composer_translation_ui_tracks_loading_and_completed_states() {
+    let mut state = state_with_message();
+    state.apply_translation_options(TranslationOptions {
+        provider: Some(TranslationProviderKind::LibreTranslate),
+        composer_target_language: Some("en".to_owned()),
+        ..Default::default()
+    });
+    state.start_composer();
+    state.insert_composer_text_at_cursor("안녕하세요");
+    let request_id = match state
+        .translate_composer_input()
+        .expect("configured translation should emit a command")
+    {
+        crate::discord::AppCommand::Translate { request_id, .. } => request_id,
+        command => panic!("unexpected command: {command:?}"),
+    };
+
+    assert_eq!(state.composer_title(), " Translating... ");
+    assert_eq!(
+        line_texts_from_ratatui(&composer_lines(&state, 24)),
+        vec!["> 안녕하세요"]
+    );
+    assert_eq!(composer_content_line_count(&state, 24), 1);
+    assert_eq!(
+        composer_cursor_position(Rect::new(0, 0, 27, 5), &state),
+        Some(Position { x: 13, y: 1 })
+    );
+
+    state.push_event(AppEvent::TranslationCompleted {
+        request_id,
+        target: crate::discord::TranslationTarget::Composer,
+        translated_text: "hello".to_owned(),
+    });
+
+    assert_eq!(state.composer_title(), " Message Input ");
+    assert_eq!(
+        line_texts_from_ratatui(&composer_lines(&state, 24)),
+        vec!["> 안녕하세요", "────── translated ──────", "> hello",]
+    );
+    assert_eq!(composer_content_line_count(&state, 24), 3);
+    assert_eq!(
+        composer_cursor_position(Rect::new(0, 0, 27, 7), &state),
+        Some(Position { x: 8, y: 3 })
+    );
+
+    let mut long = state_with_message();
+    long.apply_translation_options(TranslationOptions {
+        provider: Some(TranslationProviderKind::LibreTranslate),
+        composer_target_language: Some("en".to_owned()),
+        ..Default::default()
+    });
+    long.start_composer();
+    long.insert_composer_text_at_cursor(&"long draft line\n".repeat(20));
+    long.translate_composer_input()
+        .expect("long draft translation should emit a command");
+
+    let rendered = render_dashboard_dump(40, 12, &mut long).join("\n");
+    assert!(rendered.contains("Translating..."), "{rendered}");
+}
+
+#[test]
 fn composer_lines_show_saved_draft_when_not_composing() {
     let mut state = state_with_message();
     state.start_composer();
@@ -127,7 +188,6 @@ fn composer_lines_show_saved_draft_when_not_composing() {
 
     state.close_composer();
 
-    assert_eq!(composer_text(&state, 80), "> draft");
     assert_eq!(
         line_texts_from_ratatui(&composer_lines(&state, 80)),
         vec!["> draft"]
@@ -217,7 +277,7 @@ fn message_history_statuses_override_a_saved_draft() {
 }
 
 #[test]
-fn reply_composer_text_uses_original_reply_target_after_selection_changes() {
+fn reply_composer_hint_line_shows_dim_excerpt_and_semantic_ping_indicator() {
     let mut state = state_with_message();
     state.direct_reply_to_selected_message();
     push_message(&mut state, 2, "newer selected message");
@@ -228,14 +288,6 @@ fn reply_composer_text_uses_original_reply_target_after_selection_changes() {
             .and_then(|message| message.content.as_deref()),
         Some("newer selected message")
     );
-
-    assert_eq!(composer_text(&state, 80), "reply to hello  @ on\n> ");
-}
-
-#[test]
-fn reply_composer_hint_line_shows_dim_excerpt_and_semantic_ping_indicator() {
-    let mut state = state_with_message();
-    state.direct_reply_to_selected_message();
 
     let lines = composer_lines(&state, 80);
 
@@ -385,7 +437,12 @@ fn composer_lines_show_pending_upload_rows_above_input() {
     let mut processing = state_with_message();
     processing.start_composer();
 
-    assert!(processing.begin_clipboard_paste());
+    processing.request_paste_clipboard();
+    let request_id = processing
+        .take_paste_clipboard_request()
+        .expect("clipboard paste request");
+    assert!(processing.start_clipboard_paste(request_id));
+    assert!(processing.begin_clipboard_paste(request_id));
 
     let processing_lines = composer_lines(&processing, 80);
 

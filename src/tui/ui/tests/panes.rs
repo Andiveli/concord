@@ -230,7 +230,7 @@ fn header_labels_active_voice_broadcast() {
 }
 
 #[test]
-fn focus_pane_at_maps_dashboard_regions_and_ignores_non_panes() {
+fn pane_at_maps_dashboard_regions_and_ignores_non_panes() {
     let area = Rect::new(0, 0, 120, 20);
     let state = DashboardState::new();
     let cases = [
@@ -244,33 +244,27 @@ fn focus_pane_at_maps_dashboard_regions_and_ignores_non_panes() {
     ];
 
     for (x, y, expected) in cases {
-        assert_eq!(focus_pane_at(area, &state, x, y), expected);
+        assert_eq!(pane_at(area, &state, x, y), expected);
     }
 }
 
 #[test]
-fn focus_pane_at_expands_messages_over_hidden_panes() {
+fn pane_at_expands_messages_over_hidden_panes() {
     let area = Rect::new(0, 0, 120, 20);
     let mut state = DashboardState::new();
 
     state.toggle_pane_visibility(FocusPane::Channels);
-    assert_eq!(
-        focus_pane_at(area, &state, 21, 1),
-        Some(FocusPane::Messages)
-    );
-    assert_eq!(focus_pane_at(area, &state, 95, 1), Some(FocusPane::Members));
+    assert_eq!(pane_at(area, &state, 21, 1), Some(FocusPane::Messages));
+    assert_eq!(pane_at(area, &state, 95, 1), Some(FocusPane::Members));
 
     state.toggle_pane_visibility(FocusPane::Guilds);
     state.toggle_pane_visibility(FocusPane::Members);
-    assert_eq!(focus_pane_at(area, &state, 1, 1), Some(FocusPane::Messages));
-    assert_eq!(
-        focus_pane_at(area, &state, 119, 1),
-        Some(FocusPane::Messages)
-    );
+    assert_eq!(pane_at(area, &state, 1, 1), Some(FocusPane::Messages));
+    assert_eq!(pane_at(area, &state, 119, 1), Some(FocusPane::Messages));
 }
 
 #[test]
-fn focus_pane_at_uses_persisted_pane_widths() {
+fn pane_at_uses_persisted_pane_widths() {
     let state = DashboardState::new_with_options(
         DisplayOptions::default(),
         Default::default(),
@@ -287,20 +281,14 @@ fn focus_pane_at_uses_persisted_pane_widths() {
     );
     let area = Rect::new(0, 0, 100, 20);
 
-    assert_eq!(focus_pane_at(area, &state, 9, 1), Some(FocusPane::Guilds));
-    assert_eq!(
-        focus_pane_at(area, &state, 10, 1),
-        Some(FocusPane::Channels)
-    );
-    assert_eq!(
-        focus_pane_at(area, &state, 30, 1),
-        Some(FocusPane::Messages)
-    );
-    assert_eq!(focus_pane_at(area, &state, 85, 1), Some(FocusPane::Members));
+    assert_eq!(pane_at(area, &state, 9, 1), Some(FocusPane::Guilds));
+    assert_eq!(pane_at(area, &state, 10, 1), Some(FocusPane::Channels));
+    assert_eq!(pane_at(area, &state, 30, 1), Some(FocusPane::Messages));
+    assert_eq!(pane_at(area, &state, 85, 1), Some(FocusPane::Members));
 }
 
 #[test]
-fn mouse_target_at_maps_visible_message_action_rows() {
+fn interaction_at_maps_visible_message_action_rows() {
     let area = Rect::new(0, 0, 120, 20);
     let mut state = state_with_file_attachment_message();
     state.open_selected_message_actions();
@@ -313,19 +301,19 @@ fn mouse_target_at_maps_visible_message_action_rows() {
     let first_action_y = area.y + (area.height - popup_height) / 2 + 1;
 
     assert_eq!(
-        mouse_target_at(area, &state, 46, first_action_y - 1),
-        Some(MouseTarget::ModalBackdrop)
+        interaction_at(area, &state, 46, first_action_y - 1),
+        Some(InteractionTarget::ModalSurface)
     );
     assert_eq!(
-        mouse_target_at(area, &state, 46, first_action_y),
-        Some(MouseTarget::PopupRow {
+        interaction_at(area, &state, 46, first_action_y),
+        Some(InteractionTarget::PopupItem {
             target: SelectablePopupTarget::MessageActions,
             row: 0,
         })
     );
     assert_eq!(
-        mouse_target_at(area, &state, 46, first_action_y + last_row as u16),
-        Some(MouseTarget::PopupRow {
+        interaction_at(area, &state, 46, first_action_y + last_row as u16),
+        Some(InteractionTarget::PopupItem {
             target: SelectablePopupTarget::MessageActions,
             row: last_row,
         })
@@ -343,8 +331,8 @@ fn mouse_target_at_maps_visible_message_action_rows() {
     let popup_height = (action_count as u16 + 2).min(short_area.height.saturating_sub(2));
     let first_visible_y = (short_area.height - popup_height) / 2 + 1;
     assert_eq!(
-        mouse_target_at(short_area, &state, 46, first_visible_y),
-        Some(MouseTarget::PopupRow {
+        interaction_at(short_area, &state, 46, first_visible_y),
+        Some(InteractionTarget::PopupItem {
             target: SelectablePopupTarget::MessageActions,
             row: scroll,
         })
@@ -352,7 +340,7 @@ fn mouse_target_at_maps_visible_message_action_rows() {
 }
 
 #[test]
-fn mouse_target_at_maps_guild_and_channel_action_menu_rows() {
+fn interaction_at_maps_guild_and_channel_action_menu_rows() {
     type MenuCase = (
         fn(&mut DashboardState),
         fn(&DashboardState) -> usize,
@@ -387,13 +375,13 @@ fn mouse_target_at_maps_guild_and_channel_action_menu_rows() {
         let first_row_y = area.y + (area.height - popup_height) / 2 + 1;
 
         assert_eq!(
-            mouse_target_at(area, &state, 46, first_row_y - 1),
-            Some(MouseTarget::ModalBackdrop),
+            interaction_at(area, &state, 46, first_row_y - 1),
+            Some(InteractionTarget::ModalSurface),
             "{target:?}"
         );
         assert_eq!(
-            mouse_target_at(area, &state, 46, first_row_y),
-            Some(MouseTarget::PopupRow { target, row: 0 }),
+            interaction_at(area, &state, 46, first_row_y),
+            Some(InteractionTarget::PopupItem { target, row: 0 }),
             "{target:?}"
         );
     }
@@ -742,6 +730,96 @@ fn channel_pane_shows_voice_participants_under_voice_channel() {
         .find(|col| buffer[(*col, lobby_row)].symbol() == "🔊")
         .expect("populated voice row should keep loud speaker icon");
     assert_eq!(buffer[(lobby_icon_col, lobby_row)].fg, Color::Reset);
+}
+
+#[test]
+fn channel_pane_shows_capacity_only_for_limited_voice_channels() {
+    let guild_id = Id::new(1);
+    let limited_voice_id = Id::new(10);
+    let unlimited_voice_id = Id::new(11);
+    let alice = Id::new(20);
+    let bob = Id::new(21);
+    let carol = Id::new(22);
+    let mut state = DashboardState::new();
+    state.push_event(guild_create_event(GuildCreateFixture {
+        channels: vec![
+            ChannelInfo {
+                guild_id: Some(guild_id),
+                position: Some(0),
+                name: "Limited Lobby".to_owned(),
+                user_limit: Some(5),
+                ..ChannelInfo::test(limited_voice_id, "GuildVoice")
+            },
+            ChannelInfo {
+                guild_id: Some(guild_id),
+                position: Some(1),
+                name: "Unlimited Lobby".to_owned(),
+                user_limit: Some(0),
+                ..ChannelInfo::test(unlimited_voice_id, "GuildVoice")
+            },
+        ],
+        members: vec![
+            MemberInfo::test(alice, "Alice"),
+            MemberInfo::test(bob, "Bob"),
+            MemberInfo::test(carol, "Carol"),
+        ],
+        ..GuildCreateFixture::new(guild_id)
+    }));
+    for (channel_id, user_id) in [
+        (limited_voice_id, alice),
+        (limited_voice_id, bob),
+        (unlimited_voice_id, carol),
+    ] {
+        state.push_event(AppEvent::VoiceStateUpdate {
+            state: VoiceStateInfo::test(guild_id, Some(channel_id), user_id),
+        });
+    }
+    state.confirm_selected_guild();
+    state.set_channel_view_height(8);
+
+    let backend = TestBackend::new(40, 9);
+    let mut terminal = Terminal::new(backend).expect("test terminal should build");
+    terminal
+        .draw(|frame| render_channels(frame, frame.area(), &state, &[]))
+        .expect("draw should succeed");
+
+    let buffer = terminal.backend().buffer();
+    let rows = (0..buffer.area.height)
+        .map(|row| {
+            (0..buffer.area.width)
+                .map(|col| buffer[(col, row)].symbol().to_owned())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let limited_row = rows
+        .iter()
+        .find(|row| row.contains("Limited Lobby"))
+        .expect("limited voice channel should render");
+    let unlimited_row = rows
+        .iter()
+        .find(|row| row.contains("Unlimited Lobby"))
+        .expect("unlimited voice channel should render");
+
+    assert!(limited_row.contains("[2/5]"), "{limited_row}");
+    assert!(limited_row.ends_with("[2/5]│"), "{limited_row}");
+    assert!(!unlimited_row.contains('/'), "{unlimited_row}");
+
+    let backend = TestBackend::new(18, 9);
+    let mut terminal = Terminal::new(backend).expect("narrow test terminal should build");
+    terminal
+        .draw(|frame| render_channels(frame, frame.area(), &state, &[]))
+        .expect("narrow draw should succeed");
+    let buffer = terminal.backend().buffer();
+    let limited_row = (0..buffer.area.height)
+        .map(|row| {
+            (0..buffer.area.width)
+                .map(|col| buffer[(col, row)].symbol().to_owned())
+                .collect::<String>()
+        })
+        .find(|row| row.contains("[2/5]"))
+        .expect("narrow limited voice row should keep its capacity");
+
+    assert!(limited_row.ends_with("[2/5]│"), "{limited_row}");
 }
 
 #[test]

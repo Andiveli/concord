@@ -8,7 +8,7 @@ use crate::discord::{ChannelState, MessageHistoryAfterMode, MessageState, Sticke
 use crate::tui::text;
 use crate::tui::text::{
     MentionTarget, RenderedText, TextHighlightKind, render_user_mentions,
-    render_user_mentions_with_highlights, replace_custom_emoji_markup,
+    render_user_mentions_in_rendered_text, replace_custom_emoji_markup,
 };
 
 use super::scroll::{
@@ -76,40 +76,69 @@ impl MessagePaneSource {
 pub(super) struct ThreadReturnTarget {
     pub(super) thread_channel_id: Id<ChannelMarker>,
     pub(super) channel_id: Id<ChannelMarker>,
-    pub(super) selected_message: usize,
-    pub(super) message_scroll: usize,
-    pub(super) message_line_scroll: usize,
-    pub(super) message_keep_selection_visible: bool,
-    pub(super) message_auto_follow: bool,
-    pub(super) new_messages_marker_message_id: Option<Id<MessageMarker>>,
-    pub(super) unread_divider_last_acked_id: Option<Id<MessageMarker>>,
-    pub(super) pending_unread_anchor_scroll: bool,
+    pub(super) position: MessageViewReturnPosition,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PinnedMessageViewReturnTarget {
     pub(super) channel_id: Id<ChannelMarker>,
-    pub(super) selected_message: usize,
-    pub(super) message_scroll: usize,
-    pub(super) message_line_scroll: usize,
-    pub(super) message_keep_selection_visible: bool,
-    pub(super) message_auto_follow: bool,
-    pub(super) new_messages_marker_message_id: Option<Id<MessageMarker>>,
-    pub(super) unread_divider_last_acked_id: Option<Id<MessageMarker>>,
-    pub(super) pending_unread_anchor_scroll: bool,
+    pub(super) position: MessageViewReturnPosition,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ThreadListViewReturnTarget {
     pub(super) channel_id: Id<ChannelMarker>,
-    pub(super) selected_message: usize,
-    pub(super) message_scroll: usize,
-    pub(super) message_line_scroll: usize,
-    pub(super) message_keep_selection_visible: bool,
-    pub(super) message_auto_follow: bool,
-    pub(super) new_messages_marker_message_id: Option<Id<MessageMarker>>,
-    pub(super) unread_divider_last_acked_id: Option<Id<MessageMarker>>,
-    pub(super) pending_unread_anchor_scroll: bool,
+    pub(super) position: MessageViewReturnPosition,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct MessageViewReturnPosition {
+    selected_message: usize,
+    message_scroll: usize,
+    message_line_scroll: usize,
+    message_keep_selection_visible: bool,
+    message_auto_follow: bool,
+    new_messages_marker_message_id: Option<Id<MessageMarker>>,
+    unread_divider_last_acked_id: Option<Id<MessageMarker>>,
+    pending_unread_anchor_scroll: bool,
+}
+
+pub(super) struct MessageViewportAnchor {
+    pub(super) was_at_latest: bool,
+    pub(super) was_following_cursor: bool,
+    pub(super) selected_message_id: Option<Id<MessageMarker>>,
+    pub(super) scroll_message_id: Option<Id<MessageMarker>>,
+}
+
+impl MessageViewportAnchor {
+    pub(super) fn capture(state: &DashboardState) -> Self {
+        let was_at_latest =
+            state.messages.message_auto_follow || state.is_viewport_at_latest_message();
+        let was_following_cursor = was_at_latest && state.cursor_on_last_message();
+        let selected_message_id = (!was_following_cursor)
+            .then(|| {
+                state
+                    .messages()
+                    .get(state.selected_message())
+                    .map(|message| message.id)
+            })
+            .flatten();
+        let scroll_message_id = (!was_at_latest)
+            .then(|| {
+                state
+                    .messages()
+                    .get(state.messages.message_scroll)
+                    .map(|message| message.id)
+            })
+            .flatten();
+
+        Self {
+            was_at_latest,
+            was_following_cursor,
+            selected_message_id,
+            scroll_message_id,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -167,6 +196,32 @@ impl Default for MessageViewportState {
             thread_list_view_return_target: None,
             thread_return_target: None,
         }
+    }
+}
+
+impl MessageViewportState {
+    pub(super) fn return_position(&self) -> MessageViewReturnPosition {
+        MessageViewReturnPosition {
+            selected_message: self.selected_message,
+            message_scroll: self.message_scroll,
+            message_line_scroll: self.message_line_scroll,
+            message_keep_selection_visible: self.message_keep_selection_visible,
+            message_auto_follow: self.message_auto_follow,
+            new_messages_marker_message_id: self.new_messages_marker_message_id,
+            unread_divider_last_acked_id: self.unread_divider_last_acked_id,
+            pending_unread_anchor_scroll: self.pending_unread_anchor_scroll,
+        }
+    }
+
+    pub(super) fn restore_return_position(&mut self, position: MessageViewReturnPosition) {
+        self.selected_message = position.selected_message;
+        self.message_scroll = position.message_scroll;
+        self.message_line_scroll = position.message_line_scroll;
+        self.message_keep_selection_visible = position.message_keep_selection_visible;
+        self.message_auto_follow = position.message_auto_follow;
+        self.new_messages_marker_message_id = position.new_messages_marker_message_id;
+        self.unread_divider_last_acked_id = position.unread_divider_last_acked_id;
+        self.pending_unread_anchor_scroll = position.pending_unread_anchor_scroll;
     }
 }
 
@@ -1368,7 +1423,7 @@ impl DashboardState {
     }
 
     pub(super) fn thread_message_preview_text(&self, message: &MessageState) -> String {
-        if let Some(content) = message_preview_text(message.content.as_deref(), &message.stickers) {
+        if let Some(content) = message_preview_text(message.summary_text(), &message.stickers) {
             return self
                 .render_user_mentions(message.guild_id, &message.mentions, &content)
                 .split_whitespace()
@@ -1412,13 +1467,13 @@ impl DashboardState {
         mentions: &[MentionInfo],
         mention_everyone: bool,
         mention_roles: &[Id<RoleMarker>],
-        value: &str,
+        value: impl Into<RenderedText>,
     ) -> RenderedText {
         let current_user_id = self.discord.current_user_id.map(|id| id.get());
         let current_user_role_ids = guild_id
             .and_then(|guild_id| self.discord.cache.current_user_role_ids_for_guild(guild_id));
-        let mut rendered = render_user_mentions_with_highlights(
-            value,
+        let mut rendered = render_user_mentions_in_rendered_text(
+            value.into(),
             |user_id| self.resolve_mention_display_name(guild_id, mentions, user_id),
             |role_id| self.resolve_role_mention_name(guild_id, role_id),
             |channel_id| self.resolve_channel_mention_name(channel_id),
@@ -1460,7 +1515,7 @@ impl DashboardState {
             add_literal_mention_highlights(&mut rendered, "@everyone", everyone_kind);
             add_literal_mention_highlights(&mut rendered, "@here", everyone_kind);
         }
-        normalize_text_highlights(&mut rendered.highlights);
+        normalize_mention_highlights(&mut rendered.highlights);
         text::replace_custom_emoji_markup_in_rendered_with_images(
             rendered,
             self.show_custom_emoji(),
@@ -1587,14 +1642,7 @@ impl DashboardState {
         }
         self.messages.pinned_message_view_return_target = Some(PinnedMessageViewReturnTarget {
             channel_id,
-            selected_message: self.messages.selected_message,
-            message_scroll: self.messages.message_scroll,
-            message_line_scroll: self.messages.message_line_scroll,
-            message_keep_selection_visible: self.messages.message_keep_selection_visible,
-            message_auto_follow: self.messages.message_auto_follow,
-            new_messages_marker_message_id: self.messages.new_messages_marker_message_id,
-            unread_divider_last_acked_id: self.messages.unread_divider_last_acked_id,
-            pending_unread_anchor_scroll: self.messages.pending_unread_anchor_scroll,
+            position: self.messages.return_position(),
         });
     }
 
@@ -1612,14 +1660,7 @@ impl DashboardState {
 
         self.messages.pinned_message_view_channel_id = None;
         self.messages.pinned_message_view_return_target = None;
-        self.messages.selected_message = target.selected_message;
-        self.messages.message_scroll = target.message_scroll;
-        self.messages.message_line_scroll = target.message_line_scroll;
-        self.messages.message_keep_selection_visible = target.message_keep_selection_visible;
-        self.messages.message_auto_follow = target.message_auto_follow;
-        self.messages.new_messages_marker_message_id = target.new_messages_marker_message_id;
-        self.messages.unread_divider_last_acked_id = target.unread_divider_last_acked_id;
-        self.messages.pending_unread_anchor_scroll = target.pending_unread_anchor_scroll;
+        self.messages.restore_return_position(target.position);
         self.clamp_message_viewport();
         true
     }
@@ -1676,14 +1717,7 @@ impl DashboardState {
         }
         self.messages.thread_list_view_return_target = Some(ThreadListViewReturnTarget {
             channel_id,
-            selected_message: self.messages.selected_message,
-            message_scroll: self.messages.message_scroll,
-            message_line_scroll: self.messages.message_line_scroll,
-            message_keep_selection_visible: self.messages.message_keep_selection_visible,
-            message_auto_follow: self.messages.message_auto_follow,
-            new_messages_marker_message_id: self.messages.new_messages_marker_message_id,
-            unread_divider_last_acked_id: self.messages.unread_divider_last_acked_id,
-            pending_unread_anchor_scroll: self.messages.pending_unread_anchor_scroll,
+            position: self.messages.return_position(),
         });
     }
 
@@ -1701,14 +1735,7 @@ impl DashboardState {
 
         self.messages.thread_list_view_channel_id = None;
         self.messages.thread_list_view_return_target = None;
-        self.messages.selected_message = target.selected_message;
-        self.messages.message_scroll = target.message_scroll;
-        self.messages.message_line_scroll = target.message_line_scroll;
-        self.messages.message_keep_selection_visible = target.message_keep_selection_visible;
-        self.messages.message_auto_follow = target.message_auto_follow;
-        self.messages.new_messages_marker_message_id = target.new_messages_marker_message_id;
-        self.messages.unread_divider_last_acked_id = target.unread_divider_last_acked_id;
-        self.messages.pending_unread_anchor_scroll = target.pending_unread_anchor_scroll;
+        self.messages.restore_return_position(target.position);
         self.clamp_message_viewport();
         true
     }

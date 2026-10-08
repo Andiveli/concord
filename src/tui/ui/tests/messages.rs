@@ -1,10 +1,12 @@
 use ratatui::style::Stylize;
 
 use super::*;
+use crate::discord::ComponentMediaItemInfo;
 use crate::discord::test_builders::{
     GuildCreateFixture, MessageHistoryLoadedFixture, MessageReactionAddFixture, guild_create_event,
     message_history_loaded_event, message_reaction_add_event,
 };
+use crate::tui::message::format::format_message_translation_lines;
 
 #[test]
 fn server_pane_shows_guild_mention_badge() {
@@ -323,6 +325,8 @@ fn history_message_author_uses_channel_guild_for_role_color() {
 
 #[test]
 fn attachment_summary_replaces_or_follows_the_message_body() {
+    let mut spoiler_image = image_attachment();
+    spoiler_image.flags = 1 << 3;
     let cases = [
         (
             "image",
@@ -333,6 +337,11 @@ fn attachment_summary_replaces_or_follows_the_message_body() {
             "video",
             message_with_attachment(Some(String::new()), video_attachment()),
             "[video: clip.mp4] 1920x1080",
+        ),
+        (
+            "spoiler image",
+            message_with_attachment(Some(String::new()), spoiler_image),
+            "[image: cat.png] 640x480",
         ),
         (
             "forwarded, no body",
@@ -352,6 +361,196 @@ fn attachment_summary_replaces_or_follows_the_message_body() {
     for (name, message, expected) in cases {
         assert_eq!(format_message_content(&message, 200), expected, "{name}");
     }
+}
+
+#[test]
+fn components_v2_message_renders_text_layout_and_link_fallback() {
+    let message = MessageState {
+        content: Some(String::new()),
+        flags: MESSAGE_FLAG_IS_COMPONENTS_V2,
+        components: vec![MessageComponentInfo::Container {
+            accent_color: Some(0x3366cc),
+            spoiler: false,
+            components: vec![
+                MessageComponentInfo::TextDisplay {
+                    content: "# Last.fm\n**neo** listened to a track".to_owned(),
+                },
+                MessageComponentInfo::Section {
+                    components: vec![MessageComponentInfo::TextDisplay {
+                        content: "Artist · Album".to_owned(),
+                    }],
+                    accessory: Some(Box::new(MessageComponentInfo::Thumbnail {
+                        media: ComponentMediaInfo {
+                            url: "attachment://cover.png".to_owned(),
+                            ..ComponentMediaInfo::default()
+                        },
+                        description: Some("Album cover".to_owned()),
+                        spoiler: false,
+                    })),
+                },
+                MessageComponentInfo::Separator {
+                    divider: true,
+                    spacing: 1,
+                },
+                MessageComponentInfo::MediaGallery {
+                    items: vec![ComponentMediaItemInfo {
+                        media: ComponentMediaInfo {
+                            url: "https://example.com/gallery.png".to_owned(),
+                            content_type: Some("image/png".to_owned()),
+                            width: Some(1280),
+                            height: Some(720),
+                            ..ComponentMediaInfo::default()
+                        },
+                        description: Some("Gallery image".to_owned()),
+                        spoiler: false,
+                    }],
+                },
+                MessageComponentInfo::ActionRow {
+                    components: vec![MessageComponentInfo::Button {
+                        label: Some("Open Last.fm".to_owned()),
+                        emoji: None,
+                        url: Some("https://www.last.fm/user/neo".to_owned()),
+                        disabled: false,
+                    }],
+                },
+            ],
+        }],
+        attachments: vec![AttachmentInfo {
+            filename: "cover.png".to_owned(),
+            ..image_attachment()
+        }],
+        ..MessageState::default()
+    };
+
+    let lines = format_message_content_lines(&message, &DashboardState::new(), 80);
+    let text = line_texts(&lines).join("\n");
+
+    assert!(text.contains("# Last.fm"));
+    assert!(text.contains("neo listened to a track"));
+    assert!(text.contains("Artist · Album"));
+    assert!(!text.contains("[image: Album cover]"));
+    assert!(text.contains("[image: Gallery image]"));
+    assert!(text.contains("[Open Last.fm] https://www.last.fm/user/neo"));
+    assert!(!text.contains("<empty message>"));
+    assert_eq!(message.inline_previews().len(), 2);
+    let flow_previews = message.flow_inline_previews();
+    assert_eq!(flow_previews.len(), 1);
+    assert_eq!(flow_previews[0].filename, "gallery.png");
+    let section_thumbnails = message.section_thumbnail_previews();
+    assert_eq!(section_thumbnails.len(), 1);
+    assert_eq!(section_thumbnails[0].1.filename, "cover.png");
+    assert_eq!(section_thumbnails[0].1.accent_color, Some(0x3366cc));
+    let preview_slots = lines
+        .iter()
+        .flat_map(|line| line.preview_slots.iter())
+        .collect::<Vec<_>>();
+    assert_eq!(preview_slots.len(), 1);
+    assert!(preview_slots[0].col > 0);
+    assert!((8..=18).contains(&preview_slots[0].width));
+    assert_eq!(preview_slots[0].height, 6);
+    assert_eq!(message.attachments_in_display_order().count(), 1);
+}
+
+#[test]
+fn components_v2_text_renders_discord_timestamp_markup() {
+    let timestamp = 1_735_689_600;
+    let expected = chrono::DateTime::from_timestamp(timestamp, 0)
+        .expect("static timestamp is valid")
+        .with_timezone(&chrono::Local)
+        .format("%H:%M")
+        .to_string();
+    let message = MessageState {
+        flags: MESSAGE_FLAG_IS_COMPONENTS_V2,
+        components: vec![MessageComponentInfo::TextDisplay {
+            content: format!("Starts <t:{timestamp}:t>"),
+        }],
+        ..MessageState::default()
+    };
+
+    assert_eq!(
+        line_texts(&format_message_content_lines(
+            &message,
+            &DashboardState::new(),
+            80,
+        )),
+        vec![format!("Starts {expected}")]
+    );
+}
+
+#[test]
+fn rendered_discord_timestamp_is_distinct_from_identical_plain_text() {
+    let timestamp = 1_735_689_600;
+    let expected = chrono::DateTime::from_timestamp(timestamp, 0)
+        .expect("static timestamp is valid")
+        .with_timezone(&chrono::Local)
+        .format("%H:%M")
+        .to_string();
+    let message = message_with_content(Some(format!("Discord <t:{timestamp}:t> plain {expected}")));
+
+    let lines = format_message_content_lines(&message, &DashboardState::new(), 80);
+    let spans = lines[0].spans();
+    let timestamp_style = theme::current().style(theme::HighlightGroup::InlineTimestamp);
+
+    assert_eq!(spans[1].content.as_ref(), expected);
+    assert_eq!(spans[1].style, timestamp_style);
+    assert_eq!(spans[2].content.as_ref(), format!(" plain {expected}"));
+    assert_ne!(spans[2].style.bg, timestamp_style.bg);
+}
+
+#[test]
+fn timestamp_markup_inside_a_resolved_mention_name_remains_literal() {
+    let timestamp = 1_735_689_600;
+    let markup = format!("<t:{timestamp}:t>");
+    let message = message_with_content(Some("<@10>".to_owned()));
+    let state = state_with_member(10, &markup);
+
+    let lines = format_message_content_lines(&message, &state, 80);
+    let spans = lines[0].spans();
+
+    assert_eq!(line_texts(&lines), vec![format!("@{markup}")]);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(
+        spans[0].style.bg,
+        text_highlight_style(TextHighlightKind::OtherMention).bg
+    );
+    assert_ne!(
+        spans[0].style.bg,
+        theme::current()
+            .style(theme::HighlightGroup::InlineTimestamp)
+            .bg
+    );
+}
+
+#[test]
+fn message_timestamps_remain_literal_inside_markdown_code() {
+    let timestamp = 1_735_689_600;
+    let message = message_with_content(Some(format!(
+        "outside <t:{timestamp}:d>\ninline `<t:{timestamp}:d>`\n```text\n<t:{timestamp}:d>\n```"
+    )));
+
+    let lines = format_message_content_lines(&message, &DashboardState::new(), 80);
+    let timestamp_markup = format!("<t:{timestamp}:d>");
+
+    assert_eq!(
+        line_texts(&lines)
+            .iter()
+            .filter(|line| line.contains(&timestamp_markup))
+            .count(),
+        2
+    );
+    assert!(line_texts(&lines)[0].starts_with("outside "));
+    assert!(!line_texts(&lines)[0].contains("<t:"));
+    let timestamp_background = theme::current()
+        .style(theme::HighlightGroup::InlineTimestamp)
+        .bg;
+    assert_eq!(
+        lines
+            .iter()
+            .flat_map(MessageContentLine::spans)
+            .filter(|span| span.style.bg == timestamp_background)
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -490,6 +689,104 @@ fn message_embed_url_underlines_url_text() {
             .add_modifier
             .contains(Modifier::UNDERLINED)
     );
+}
+
+#[test]
+fn message_embed_renders_documented_link_targets_and_media_descriptions() {
+    let mut message = message_with_content(Some("watch this".to_owned()));
+    message.embeds = vec![EmbedInfo {
+        provider_name: Some("Provider".to_owned()),
+        provider_url: Some("https://provider.example".to_owned()),
+        author_name: Some("Uploader".to_owned()),
+        author_url: Some("https://provider.example/uploader".to_owned()),
+        thumbnail_url: Some("https://cdn.example/thumb.png".to_owned()),
+        thumbnail_description: Some("Small preview".to_owned()),
+        image_url: Some("https://cdn.example/image.png".to_owned()),
+        image_description: Some("Main diagram".to_owned()),
+        video_url: Some("https://cdn.example/video.mp4".to_owned()),
+        video_description: Some("Video walkthrough".to_owned()),
+        ..EmbedInfo::test()
+    }];
+
+    let lines = format_message_content_lines(&message, &DashboardState::new(), 120);
+    let texts = line_texts(&lines);
+
+    assert!(texts.contains(&"  ▎ Provider · https://provider.example"));
+    assert!(texts.contains(&"  ▎ Uploader · https://provider.example/uploader"));
+    assert!(texts.contains(&"  ▎ [thumbnail: Small preview]"));
+    assert!(texts.contains(&"  ▎ [image: Main diagram]"));
+    assert!(texts.contains(&"  ▎ [video: Video walkthrough]"));
+}
+
+#[test]
+fn message_embed_groups_documented_inline_fields() {
+    let mut message = message_with_content(Some("stats".to_owned()));
+    message.embeds = vec![EmbedInfo {
+        fields: vec![
+            crate::discord::EmbedFieldInfo {
+                name: "Duration".to_owned(),
+                value: "3:33".to_owned(),
+                inline: true,
+            },
+            crate::discord::EmbedFieldInfo {
+                name: "Quality".to_owned(),
+                value: "HD".to_owned(),
+                inline: true,
+            },
+            crate::discord::EmbedFieldInfo {
+                name: "Notes".to_owned(),
+                value: "Full description".to_owned(),
+                inline: false,
+            },
+        ],
+        ..EmbedInfo::test()
+    }];
+
+    let lines = format_message_content_lines(&message, &DashboardState::new(), 120);
+
+    assert_eq!(
+        line_texts(&lines),
+        vec![
+            "stats",
+            "  ▎ Duration: 3:33 │ Quality: HD",
+            "  ▎ Notes",
+            "  ▎ Full description",
+        ]
+    );
+}
+
+#[test]
+fn duplicate_embed_urls_render_text_once_but_keep_distinct_media() {
+    let mut message = message_with_content(Some("link".to_owned()));
+    message.embeds = vec![
+        EmbedInfo {
+            title: Some("Primary embed".to_owned()),
+            url: Some("https://example.com/article".to_owned()),
+            image_url: Some("https://example.com/one.png".to_owned()),
+            ..EmbedInfo::test()
+        },
+        EmbedInfo {
+            title: Some("Duplicate text".to_owned()),
+            url: Some("https://example.com/article".to_owned()),
+            image_url: Some("https://example.com/two.png".to_owned()),
+            ..EmbedInfo::test()
+        },
+        EmbedInfo {
+            url: Some("https://example.com/article".to_owned()),
+            image_url: Some("https://example.com/two.png".to_owned()),
+            ..EmbedInfo::test()
+        },
+    ];
+
+    let lines = format_message_content_lines(&message, &DashboardState::new(), 120);
+    let text = line_texts(&lines).join("\n");
+    let previews = message.inline_previews();
+
+    assert!(text.contains("Primary embed"));
+    assert!(!text.contains("Duplicate text"));
+    assert_eq!(previews.len(), 2);
+    assert_eq!(previews[0].url, "https://example.com/one.png");
+    assert_eq!(previews[1].url, "https://example.com/two.png");
 }
 
 #[test]
@@ -679,7 +976,7 @@ fn message_content_applies_supported_markdown_formatting() {
         .expect("mention span should survive quote formatting");
     assert_eq!(
         mention.style.fg,
-        mention_highlight_style(TextHighlightKind::OtherMention).fg
+        text_highlight_style(TextHighlightKind::OtherMention).fg
     );
 
     let emoji = message_with_content(Some("- <:party:99> party".to_owned()));
@@ -713,7 +1010,7 @@ fn message_content_applies_supported_markdown_formatting() {
     assert!(mention_span.style.add_modifier.contains(Modifier::BOLD));
     assert_eq!(
         mention_span.style.fg,
-        mention_highlight_style(TextHighlightKind::OtherMention).fg
+        text_highlight_style(TextHighlightKind::OtherMention).fg
     );
 
     let emoji = message_with_content(Some("**<:party:99>**".to_owned()));
@@ -1017,7 +1314,7 @@ fn message_content_highlights_current_user_mentions() {
     assert_eq!(lines[1].spans[2].content.as_ref(), "@server alias");
     assert_eq!(
         lines[1].spans[2].style.fg,
-        mention_highlight_style(TextHighlightKind::SelfMention).fg
+        text_highlight_style(TextHighlightKind::SelfMention).fg
     );
 }
 
@@ -1052,11 +1349,11 @@ fn message_content_highlights_other_user_mentions_with_softer_color() {
     assert_eq!(lines[1].spans[2].content.as_ref(), "@alice");
     assert_eq!(
         lines[1].spans[2].style.fg,
-        mention_highlight_style(TextHighlightKind::OtherMention).fg
+        text_highlight_style(TextHighlightKind::OtherMention).fg
     );
     assert_ne!(
         lines[1].spans[2].style.fg,
-        mention_highlight_style(TextHighlightKind::SelfMention).fg,
+        text_highlight_style(TextHighlightKind::SelfMention).fg,
         "other-user mentions must not look like a self-mention notification"
     );
 }
@@ -1079,7 +1376,7 @@ fn message_content_highlights_detected_urls() {
     );
     assert_eq!(
         lines[0].spans()[1].style.fg,
-        mention_highlight_style(TextHighlightKind::Url).fg
+        text_highlight_style(TextHighlightKind::Url).fg
     );
     assert!(
         lines[0].spans()[1]
@@ -1139,7 +1436,7 @@ fn message_content_highlights_broadcast_mentions_for_current_user() {
         assert_eq!(lines[1].spans[2].content.as_ref(), keyword);
         assert_eq!(
             lines[1].spans[2].style.fg,
-            mention_highlight_style(TextHighlightKind::SelfMention).fg
+            text_highlight_style(TextHighlightKind::SelfMention).fg
         );
     }
 }
@@ -1174,11 +1471,11 @@ fn message_content_highlights_mixed_everyone_and_direct_mentions_in_order() {
     assert_eq!(lines[1].spans[3].content.as_ref(), "@neo");
     assert_eq!(
         lines[1].spans[1].style.fg,
-        mention_highlight_style(TextHighlightKind::SelfMention).fg
+        text_highlight_style(TextHighlightKind::SelfMention).fg
     );
     assert_eq!(
         lines[1].spans[3].style.fg,
-        mention_highlight_style(TextHighlightKind::SelfMention).fg
+        text_highlight_style(TextHighlightKind::SelfMention).fg
     );
 }
 
@@ -1270,7 +1567,7 @@ fn message_content_highlights_role_mentions_with_role_name() {
         .expect("resolved role mention should have its own span");
     assert_eq!(
         mention.style.fg,
-        mention_highlight_style(TextHighlightKind::OtherMention).fg
+        text_highlight_style(TextHighlightKind::OtherMention).fg
     );
     assert_eq!(mention.style.bg, Some(Color::Rgb(40, 50, 92)));
 }
@@ -1357,7 +1654,7 @@ fn mention_like_display_name_does_not_duplicate_highlight_spans() {
     assert_eq!(lines[1].spans[2].content.as_ref(), "@everyone");
     assert_eq!(
         lines[1].spans[2].style.fg,
-        mention_highlight_style(TextHighlightKind::SelfMention).fg
+        text_highlight_style(TextHighlightKind::SelfMention).fg
     );
 }
 
@@ -1366,42 +1663,6 @@ fn message_content_does_not_split_grapheme_clusters() {
     let lines = wrap_text_lines("👨‍👩‍👧‍👦", 7);
 
     assert_eq!(lines, vec!["👨‍👩‍👧‍👦".to_owned()]);
-}
-
-#[test]
-fn thread_created_message_uses_cached_thread_details() {
-    let mut message = message_with_content(Some("release notes".to_owned()));
-    message.message_kind = MessageKind::new(18);
-    message.id =
-        test_message_id_for_unix_millis(current_unix_millis().saturating_sub(10 * 60 * 1000));
-    let latest_thread_message_id =
-        test_message_id_for_unix_millis(current_unix_millis().saturating_sub(2 * 60 * 1000));
-    let mut state = DashboardState::new();
-    state.push_event(AppEvent::ChannelUpsert(ChannelInfo {
-        guild_id: Some(Id::new(1)),
-        parent_id: Some(message.channel_id),
-        last_message_id: Some(latest_thread_message_id),
-        name: "release notes".to_owned(),
-        message_count: Some(12),
-        total_message_sent: Some(14),
-        thread_metadata: Some(crate::discord::ThreadMetadataInfo::test(false, false)),
-        ..ChannelInfo::test(Id::new(10), "thread")
-    }));
-
-    let lines = format_message_content_lines(&message, &state, 200);
-    let texts = line_texts(&lines);
-
-    assert_eq!(texts[0], "neo started release notes thread.");
-    assert!(texts[1].starts_with("  ╭"));
-    assert!(texts[2].starts_with("  │ release notes"));
-    assert!(texts[3].trim().trim_matches('│').trim().is_empty());
-    assert!(texts[4].starts_with("  │ Preview unavailable"));
-    // The thread has no tags, so the tags row is omitted: metadata follows the
-    // preview directly.
-    assert!(texts[5].contains("12 comments"));
-    assert!(texts[5].contains("2 minutes ago"));
-    assert!(texts[6].starts_with("  ╰"));
-    assert_eq!(lines[0].style, Style::default());
 }
 
 #[test]
@@ -1443,6 +1704,16 @@ fn thread_created_message_uses_shared_thread_card_layout() {
 
     assert_eq!(texts[0], "neo started release notes thread.");
     assert_eq!(&texts[1..1 + expected_card.len()], expected_card.as_slice());
+    assert!(texts[1].starts_with("  ╭"));
+    assert!(texts[2].starts_with("  │ release notes"));
+    assert!(texts[3].trim().trim_matches('│').trim().is_empty());
+    assert!(texts[4].starts_with("  │ Preview unavailable"));
+    // The thread has no tags, so the tags row is omitted: metadata follows the
+    // preview directly.
+    assert!(texts[5].contains("12 comments"));
+    assert!(texts[5].contains("2 minutes ago"));
+    assert!(texts[6].starts_with("  ╰"));
+    assert_eq!(lines[0].style, Style::default());
 }
 
 #[test]
@@ -1569,7 +1840,7 @@ fn poll_message_body_highlights_mentions_inside_box() {
     assert_eq!(spans[1].content.as_ref(), "@server alias");
     assert_eq!(
         spans[1].style.fg,
-        mention_highlight_style(TextHighlightKind::SelfMention).fg
+        text_highlight_style(TextHighlightKind::SelfMention).fg
     );
 }
 
@@ -1812,6 +2083,90 @@ fn message_viewport_lines_keep_reactions_below_reacted_grouped_message() {
 }
 
 #[test]
+fn translated_message_is_rendered_below_the_original_with_branch_anchor() {
+    let mut state = state_with_message();
+    state.apply_translation_options(TranslationOptions {
+        provider: Some(TranslationProviderKind::LibreTranslate),
+        message_target_language: Some("ko".to_owned()),
+        ..Default::default()
+    });
+    let command = state
+        .activate_message_action_kind(MessageActionKind::Translate)
+        .expect("configured translation should emit a command");
+    let (request_id, message_id) = match command {
+        crate::discord::AppCommand::Translate {
+            request_id,
+            target: crate::discord::TranslationTarget::Message(message_id),
+            ..
+        } => (request_id, message_id),
+        command => panic!("unexpected command: {command:?}"),
+    };
+    state.push_event(AppEvent::TranslationCompleted {
+        request_id,
+        target: crate::discord::TranslationTarget::Message(message_id),
+        translated_text: "숫자 123 https://example.com <#2> **굵게**".to_owned(),
+    });
+    let translated_lines = format_message_translation_lines(
+        state
+            .selected_message_state()
+            .expect("translated message should remain selected"),
+        &state,
+        80,
+    );
+    let translated_spans = translated_lines
+        .first()
+        .expect("translation should fit on one line")
+        .spans();
+    let translated_text = translated_spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+    assert_eq!(
+        translated_text,
+        "╰─ 숫자 123 https://example.com #general 굵게"
+    );
+    let number_span = translated_spans
+        .iter()
+        .find(|span| span.content.contains("숫자 123"))
+        .expect("plain translated text should remain visible");
+    assert_eq!(
+        number_span.style,
+        theme::current().style(theme::HighlightGroup::MessageBody)
+    );
+    let url_span = translated_spans
+        .iter()
+        .find(|span| span.content.contains("https://example.com"))
+        .expect("translated URL should remain visible");
+    assert!(url_span.style.add_modifier.contains(Modifier::UNDERLINED));
+    let bold_span = translated_spans
+        .iter()
+        .find(|span| span.content.contains("굵게"))
+        .expect("translated Markdown should remain visible");
+    assert!(bold_span.style.add_modifier.contains(Modifier::BOLD));
+    let messages = state.messages();
+
+    let lines = message_viewport_lines(
+        &messages,
+        None,
+        &state,
+        super::default_message_viewport_layout(),
+        &[],
+    );
+    let texts = line_texts_from_ratatui(&lines);
+    let original = texts
+        .iter()
+        .position(|line| line.contains("hello"))
+        .expect("original message line");
+    let translation = texts
+        .iter()
+        .position(|line| line.contains("╰─ 숫자 123"))
+        .expect("translated message line");
+
+    assert_eq!(translation, original + 1);
+}
+
+#[test]
 fn message_viewport_lines_reserve_bounded_rows_for_image_albums() {
     for (attachment_count, expected_lines, overflow_text) in [
         (2, 8, None),
@@ -2021,7 +2376,7 @@ fn message_viewport_lines_keep_rows_from_tall_following_message() {
     .take(5)
     .collect::<Vec<_>>();
     let visible_text = line_texts_from_ratatui(&visible_rows);
-    let sent_time = format_message_sent_time(Id::new(1), true);
+    let sent_time = format_message_local_time(Id::new(1), true);
 
     assert!(visible_text[0].starts_with("╭─oooo  "));
     assert!(visible_text[0].contains(&sent_time));

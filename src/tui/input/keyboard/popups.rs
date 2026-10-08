@@ -3,9 +3,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::discord::AppCommand;
 use crate::tui::keybindings::{
     AttachmentViewerAction, ChannelSwitcherAction, ComposerAction, EmojiReactionPickerAction,
-    KeyChord, NotificationInboxAction, OptionsPopupAction, PollVotePickerAction, PopupKeyMapLookup,
-    PopupListAction, ProfilePopupAction, ProfilePopupTabAction, ReactionUsersPopupAction,
-    ScrollAction, SearchPopupAction, SelectionAction, SelectionKeySet,
+    KeyChord, NotificationInboxAction, OptionsPopupAction, PollVotePickerAction, PopupAction,
+    PopupKeyMapLookup, PopupListAction, ProfilePopupAction, ProfilePopupTabAction,
+    ReactionUsersPopupAction, ScrollAction, SearchPopupAction, SelectionAction, SelectionKeySet,
     VoiceParticipantAudioPopupAction, push_to_talk_shortcut_from_key,
 };
 use crate::tui::state::{
@@ -71,6 +71,19 @@ pub(super) fn handle_popup_key(
         return Some(command);
     }
 
+    // Resolve fixed row movement once for every routed popup. The active popup
+    // policy decides whether that means selecting a row or scrolling a document.
+    if keymap_context.is_some()
+        && let Some(action) = state.key_bindings().fixed_selection_action(key)
+    {
+        let action = match action {
+            SelectionAction::Next => PopupAction::SelectNext,
+            SelectionAction::Previous => PopupAction::SelectPrevious,
+        };
+        state.close_key_sequence();
+        return Some(state.execute_popup_keymap_action(action));
+    }
+
     let close_key = match policy.input_mode {
         PopupInputMode::Routed => state.key_bindings().is_popup_close_key(key),
         PopupInputMode::TextEntry => state.key_bindings().is_text_entry_popup_close_key(key),
@@ -120,7 +133,9 @@ fn dispatch_popup_key(
         ActiveModalPopupKind::KeymapHelp => {
             route_fallback_key(state, key, stage, handle_keymap_popup_key)
         }
-        ActiveModalPopupKind::DebugLog => route_fallback_key(state, key, stage, ignore_popup_key),
+        ActiveModalPopupKind::DebugLog => {
+            route_fallback_key(state, key, stage, handle_debug_log_key)
+        }
         ActiveModalPopupKind::QuitConfirmation => route_confirmation_key(
             state,
             key,
@@ -197,6 +212,9 @@ fn dispatch_popup_key(
             handle_notification_inbox_fixed_key,
             handle_notification_inbox_key,
         ),
+        ActiveModalPopupKind::GifPicker => {
+            route_fallback_key(state, key, stage, handle_gif_picker_key)
+        }
         ActiveModalPopupKind::Search => {
             route_fallback_key(state, key, stage, handle_search_popup_key)
         }
@@ -464,8 +482,8 @@ fn handle_forum_post_composer_key(state: &mut DashboardState, key: KeyEvent) -> 
         return handle_forum_post_composer_edit_key(state, key);
     }
 
-    // The scroll keys (J/K and the arrows) pan the viewport without moving the
-    // field selection, so long bodies stay readable.
+    // Viewport scroll actions pan the form without moving the field selection,
+    // so long bodies stay readable.
     if let Some(action) = state.key_bindings().scroll_action(key) {
         state.scroll_forum_post_composer(action);
         return None;
@@ -495,6 +513,8 @@ fn handle_forum_post_composer_key(state: &mut DashboardState, key: KeyEvent) -> 
         ComposerAction::OpenInEditor
         | ComposerAction::PasteClipboard
         | ComposerAction::InsertNewline
+        | ComposerAction::OpenGifPicker
+        | ComposerAction::Translate
         | ComposerAction::EditText(_)
         | ComposerAction::InsertChar(_)
         | ComposerAction::ToggleReplyPing
@@ -526,6 +546,8 @@ fn handle_forum_post_tag_picker_key(
         | ComposerAction::PasteClipboard
         | ComposerAction::InsertNewline
         | ComposerAction::RemoveLastAttachment
+        | ComposerAction::OpenGifPicker
+        | ComposerAction::Translate
         | ComposerAction::EditText(_)
         | ComposerAction::InsertChar(_)
         | ComposerAction::ToggleReplyPing
@@ -550,7 +572,9 @@ fn handle_forum_post_composer_edit_key(
         ComposerAction::RemoveLastAttachment => state.pop_pending_forum_post_attachment(),
         ComposerAction::OpenInEditor => state.request_open_forum_post_body_in_editor(),
         ComposerAction::EditText(action) => state.edit_forum_post_active_text_input(action),
-        ComposerAction::ToggleReplyPing => {}
+        ComposerAction::OpenGifPicker
+        | ComposerAction::Translate
+        | ComposerAction::ToggleReplyPing => {}
         ComposerAction::Ignore => {}
     }
     None
@@ -604,9 +628,8 @@ fn handle_thread_edit_key(state: &mut DashboardState, key: KeyEvent) -> Option<A
         return handle_thread_edit_title_key(state, key);
     }
 
-    // The scroll keys (J/K and the arrows) pan the viewport without moving the
-    // field selection. The selectors claim Left/Right and h/l below before this
-    // runs.
+    // Viewport scroll actions pan the form without moving the field selection.
+    // The selectors claim Left/Right and h/l below before this runs.
     if !matches!(
         key.code,
         KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
@@ -640,6 +663,8 @@ fn handle_thread_edit_key(state: &mut DashboardState, key: KeyEvent) -> Option<A
         | ComposerAction::PasteClipboard
         | ComposerAction::InsertNewline
         | ComposerAction::RemoveLastAttachment
+        | ComposerAction::OpenGifPicker
+        | ComposerAction::Translate
         | ComposerAction::EditText(_)
         | ComposerAction::InsertChar(_)
         | ComposerAction::ToggleReplyPing
@@ -671,6 +696,8 @@ fn handle_thread_edit_tag_picker_key(
         | ComposerAction::PasteClipboard
         | ComposerAction::InsertNewline
         | ComposerAction::RemoveLastAttachment
+        | ComposerAction::OpenGifPicker
+        | ComposerAction::Translate
         | ComposerAction::EditText(_)
         | ComposerAction::InsertChar(_)
         | ComposerAction::ToggleReplyPing
@@ -694,6 +721,8 @@ fn handle_thread_edit_title_key(state: &mut DashboardState, key: KeyEvent) -> Op
         ComposerAction::InsertNewline
         | ComposerAction::RemoveLastAttachment
         | ComposerAction::OpenInEditor
+        | ComposerAction::OpenGifPicker
+        | ComposerAction::Translate
         | ComposerAction::ToggleReplyPing
         | ComposerAction::Ignore => {}
     }
@@ -1289,6 +1318,25 @@ fn handle_reaction_users_popup_key(
     }
 }
 
+fn handle_debug_log_key(state: &mut DashboardState, key: KeyEvent) -> Option<AppCommand> {
+    if state.debug_log_filter_cursor().is_some() {
+        if let Some(action) = state.key_bindings().pane_filter_action(key) {
+            state.apply_debug_log_filter_action(action);
+        }
+        return None;
+    }
+    if let Some(action) = state
+        .key_bindings()
+        .selection_action(key, SelectionKeySet::Navigation)
+    {
+        return match action {
+            SelectionAction::Next => state.move_active_popup_down(),
+            SelectionAction::Previous => state.move_active_popup_up(),
+        };
+    }
+    None
+}
+
 fn handle_keymap_popup_key(state: &mut DashboardState, key: KeyEvent) -> Option<AppCommand> {
     if let Some(action) = state
         .key_bindings()
@@ -1353,5 +1401,42 @@ fn handle_options_popup_key(state: &mut DashboardState, key: KeyEvent) -> Option
         None => {}
     }
 
+    None
+}
+
+fn handle_gif_picker_key(state: &mut DashboardState, key: KeyEvent) -> Option<AppCommand> {
+    if state.is_gif_query_editing() {
+        match key.code {
+            KeyCode::Enter => state.stop_gif_query_editing(),
+            _ => match state.key_bindings().composer_action(key) {
+                ComposerAction::PasteClipboard => state.request_paste_clipboard(),
+                ComposerAction::InsertChar(value) => state.insert_gif_query(&value.to_string()),
+                ComposerAction::EditText(action) => state.edit_gif_query(action),
+                ComposerAction::ClearInput => state.clear_gif_query(),
+                _ => {}
+            },
+        }
+    } else {
+        if state
+            .gif_picker()
+            .is_some_and(|picker| !picker.query_selected)
+            && let Some(delta) = state.key_bindings().horizontal_adjustment_delta(key)
+        {
+            state.scroll_gif_titles(delta);
+            return None;
+        }
+        match key.code {
+            KeyCode::Enter
+                if state
+                    .gif_picker()
+                    .is_some_and(|picker| picker.query_selected) =>
+            {
+                state.select_gif_query();
+            }
+            KeyCode::Enter => state.confirm_gif_selection(),
+            KeyCode::Char('r') => state.retry_gif_page(),
+            _ => {}
+        }
+    }
     None
 }

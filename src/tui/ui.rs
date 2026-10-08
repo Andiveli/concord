@@ -18,14 +18,15 @@ use super::{
     message::format::{
         MessageContentLine, ReactionLayout, WrappedTextLine, embed_color,
         format_message_content_sections_with_loaded_custom_emoji_urls, format_message_relative_age,
-        lay_out_reaction_chips_with_custom_emoji_images, reaction_line_spans, wrap_text_lines,
-        wrap_text_with_metadata,
+        format_message_translation_lines_with_loaded_custom_emoji_urls,
+        lay_out_reaction_chips_with_custom_emoji_images, reaction_line_spans,
+        wrap_plain_text_at_words, wrap_text_lines, wrap_text_with_metadata,
     },
     message::layout::MessageViewportPlan,
     state::{
         ActiveModalPopupKind, AppliedForumTag, AttachmentDownloadProgressView,
-        AttachmentViewerItem, ChannelSwitcherItem, ChannelThreadItem, DashboardState,
-        DisplayOptionItem, EmojiReactionItem, FocusPane, GUILD_PANE_ENTRY_HEIGHT,
+        AttachmentViewerItem, ChannelSwitcherItem, ChannelSwitcherMode, ChannelSwitcherView,
+        ChannelThreadItem, DashboardState, DisplayOptionItem, EmojiReactionItem, FocusPane,
         MessageActionItem, MessageUrlItem, PollVotePickerItem, SearchFieldView, SearchPopupMode,
         SearchPopupView, SearchResultItem, SelectablePopupSnapshot, SelectablePopupTarget,
         ThreadActionItem, apply_discord_foreground, normal_text_style, presence_marker,
@@ -33,9 +34,10 @@ use super::{
     },
     text::{EmojiImageSize, sanitize_for_display_width, truncate_display_width},
 };
+
 use crate::discord::{
-    ActivityInfo, ChannelState, ChannelUnreadState, ChannelVisibilityStats, FriendStatus,
-    MessageState, PresenceStatus, ReactionInfo, RoleState, UserProfileInfo, is_thread_kind,
+    ActivityInfo, ChannelState, ChannelUnreadState, FriendStatus, MessageState, PresenceStatus,
+    ReactionInfo, RoleState, UserProfileInfo, is_thread_kind,
 };
 
 pub(in crate::tui) const LOCAL_UPLOAD_PREVIEW_HEIGHT: u16 = 6;
@@ -43,7 +45,7 @@ pub(in crate::tui) const LOCAL_UPLOAD_PREVIEW_WIDTH: u16 = 32;
 
 mod activity;
 mod emoji_overlay;
-mod hit_test;
+mod interaction;
 mod layout;
 pub(in crate::tui) mod loading_indicator;
 mod message;
@@ -52,7 +54,7 @@ mod popups;
 pub(in crate::tui) mod thread_card;
 mod types;
 
-pub(crate) use self::hit_test::{focus_pane_at, mouse_target_at};
+pub(crate) use self::interaction::{FormButton, InteractionMap, InteractionTarget};
 #[cfg(test)]
 use self::layout::composer_prompt_line_count;
 use self::layout::{
@@ -80,7 +82,7 @@ use self::popups::user_profile_popup_text;
 use self::popups::{
     active_selectable_popup_layout, forum_post_composer_metrics, forum_post_composer_popup_area,
     keymap_popup_text_area, keymap_popup_total_lines, popup_form_areas, render_attachment_viewer,
-    render_channel_action_menu, render_channel_switcher_popup, render_debug_log_popup,
+    render_channel_action_menu, render_channel_switcher_popup, render_debug_panel,
     render_downloads_popup, render_emoji_reaction_picker, render_folder_settings_popup,
     render_forum_post_composer, render_forum_post_tag_picker, render_guild_action_menu,
     render_guild_leave_confirmation, render_key_sequence_hint, render_keymap_help_popup,
@@ -91,38 +93,35 @@ use self::popups::{
     render_reaction_users_popup, render_search_popup, render_stream_info,
     render_thread_action_menu, render_thread_delete_confirmation, render_thread_edit,
     render_thread_edit_tag_picker, render_toast, render_user_profile_popup,
-    render_voice_participant_audio_popup, thread_edit_metrics, thread_edit_popup_area,
-    user_profile_popup_has_avatar, user_profile_popup_metrics, user_profile_popup_text_geometry,
+    render_voice_participant_audio_popup, sync_debug_panel, thread_edit_metrics,
+    thread_edit_popup_area, user_profile_popup_has_avatar, user_profile_popup_metrics,
+    user_profile_popup_text_geometry,
 };
-pub(crate) use self::types::MouseTarget;
+pub(crate) use self::types::UserProfileControl;
 pub use self::types::{
     AvatarImage, EmojiImage, ImagePreview, ImagePreviewLayout, ImagePreviewState,
 };
 use self::types::{
     EMBED_PREVIEW_GUTTER_PREFIX, MESSAGE_AVATAR_OFFSET, MESSAGE_AVATAR_PLACEHOLDER,
-    MESSAGE_SELECTION_PREFIX_WIDTH, MessageViewportLayout, UserProfilePopupText,
+    MESSAGE_SELECTION_PREFIX_WIDTH, MessageViewportLayout, UserProfileControlRegion,
+    UserProfilePopupText,
 };
 #[cfg(test)]
 use self::{
     message::list::{
-        date_separator_line, format_message_sent_time, inline_image_preview_row,
-        message_author_style, message_body_custom_emoji_rows, message_item_lines,
-        message_viewport_layout, message_viewport_lines, new_messages_notice_line,
-        selected_avatar_x_offset, selected_message_card_width, selected_message_content_x_offset,
+        date_separator_line, message_author_style, message_item_lines, message_viewport_layout,
+        message_viewport_lines, new_messages_notice_line, selected_message_card_width,
     },
     popups::{
-        centered_viewer_preview_area, channel_action_menu_lines_for_test,
-        channel_switcher_cursor_position, channel_switcher_lines, debug_log_popup_lines,
-        emoji_reaction_picker_lines, emoji_reaction_picker_lines_for_width,
-        emoji_reaction_picker_lines_with_own_reactions, filtered_emoji_reaction_picker_lines,
+        EmojiReactionPickerRenderOptions, centered_viewer_preview_area,
+        channel_action_menu_lines_for_test, channel_switcher_cursor_position,
+        channel_switcher_lines, emoji_reaction_picker_lines_with_custom_emoji_images,
         folder_settings_input_line_for_test, keymap_help_popup_lines,
-        long_message_confirmation_lines_for_test, message_action_menu_lines,
-        message_action_menu_lines_with_keymap_options, message_delete_confirmation_lines,
-        message_pin_confirmation_lines, message_remove_embeds_confirmation_lines,
-        message_url_picker_lines_for_width, options_popup_lines, poll_vote_picker_lines,
-        quit_confirmation_lines, reaction_list_lines_with_ready_urls, reaction_users_popup_lines,
-        stream_info_area, stream_info_lines, stream_info_lines_for_width, toast_line,
-        user_profile_popup_lines, user_profile_popup_lines_with_activities,
+        long_message_confirmation_lines, message_action_menu_lines,
+        message_action_menu_lines_with_keymap_options, message_confirmation_lines,
+        options_popup_lines, poll_vote_picker_lines, quit_confirmation_popup_lines,
+        reaction_list_lines, reaction_user_lines, stream_info_area, stream_info_lines,
+        stream_info_lines_for_width, toast_line,
     },
     thread_card::{
         thread_card_reaction_summary, thread_card_tag_rows_for_test, thread_card_viewport_lines,
@@ -194,6 +193,7 @@ pub fn sync_view_heights(area: Rect, state: &mut DashboardState) {
             state.reveal_user_profile_popup_row(row);
         }
     }
+    sync_debug_panel(area, state);
     if state.is_active_modal_popup(ActiveModalPopupKind::KeymapHelp) {
         let inner = keymap_popup_text_area(area);
         let total_lines = keymap_popup_total_lines(state);
@@ -257,10 +257,23 @@ fn sync_composer_viewport(area: Rect, state: &mut DashboardState) {
         state.composer_cursor_byte_index(),
         inner_width,
     );
-    let cursor_row = composer_rows_before_input(state).saturating_add(prompt_row);
+    let cursor_row = composer_rows_before_input(state, inner_width).saturating_add(prompt_row);
     let total_lines = usize::from(composer_content_line_count(state, inner_width))
         .max(cursor_row.saturating_add(1));
     state.sync_composer_scroll(view_height, total_lines, cursor_row);
+}
+
+pub(in crate::tui) fn attachment_viewer_preview_screen_area(
+    area: Rect,
+    state: &DashboardState,
+    preview_width: u16,
+    preview_height: u16,
+) -> Rect {
+    popups::centered_viewer_preview_area(
+        attachment_viewer_image_area(area, state.attachment_viewer_zoom()),
+        preview_width,
+        preview_height,
+    )
 }
 
 pub fn image_preview_layout(area: Rect, state: &DashboardState) -> ImagePreviewLayout {
@@ -298,6 +311,7 @@ pub fn render(
             guild_icons: Vec::new(),
             emoji_images,
             profile_avatar,
+            gif_preview: None,
             message_viewport_plan: None,
         },
     );
@@ -309,8 +323,11 @@ pub(in crate::tui) struct DashboardRenderData<'a> {
     pub(in crate::tui) guild_icons: Vec<GuildIconImage<'a>>,
     pub(in crate::tui) emoji_images: Vec<EmojiImage<'a>>,
     pub(in crate::tui) profile_avatar: Option<AvatarImage<'a>>,
+    pub(in crate::tui) gif_preview: Option<Result<&'a ratatui_image::protocol::Protocol, &'a str>>,
     pub(in crate::tui) message_viewport_plan: Option<&'a MessageViewportPlan<'a>>,
 }
+
+pub(in crate::tui) use popups::{gif_picker_preview_area, gif_picker_search_area};
 
 pub(in crate::tui) fn render_with_message_viewport_plan(
     frame: &mut Frame,
@@ -385,9 +402,10 @@ pub(in crate::tui) fn render_with_message_viewport_plan(
     render_emoji_reaction_picker(frame, popup_area, state, &render_data.emoji_images);
     render_reaction_users_popup(frame, popup_area, state, &render_data.emoji_images);
     render_attachment_viewer(frame, frame.area(), state, viewer_image_preview);
-    render_debug_log_popup(frame, popup_area, state);
+    render_debug_panel(frame, popup_area, state);
     render_keymap_help_popup(frame, popup_area, state);
     render_search_popup(frame, popup_area, state);
+    popups::render_gif_picker(frame, popup_area, state, render_data.gif_preview);
     render_forum_post_composer(frame, popup_area, state);
     render_forum_post_tag_picker(frame, popup_area, state, &render_data.emoji_images);
     render_thread_edit(frame, popup_area, state);

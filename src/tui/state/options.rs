@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
 use crate::config::{
-    AppOptions, ComposerOptions, CredentialOptions, DisplayOptions, ImagePreviewQualityPreset,
-    KeymapOptions, NotificationOptions, PresenceOptions, ReactionOptions, UiStateOptions,
-    VoiceOptions, VoiceParticipantPlaybackOption,
+    AnimatePreviews, AppOptions, ComposerOptions, CredentialOptions, DisplayOptions,
+    ImagePreviewQualityPreset, KeymapOptions, NotificationOptions, PresenceOptions,
+    ReactionOptions, TranslationOptions, UiStateOptions, VoiceOptions,
+    VoiceParticipantPlaybackOption,
 };
 use crate::discord::ids::{Id, marker::UserMarker};
 use crate::discord::{AppCommand, VoiceAudioSourceOptions, VoiceParticipantPlaybackSettings};
@@ -111,6 +112,14 @@ impl DashboardState {
 
     pub(in crate::tui) fn apply_reaction_options(&mut self, reaction_options: ReactionOptions) {
         self.options.reaction_options = reaction_options;
+    }
+
+    pub(in crate::tui) fn apply_translation_options(
+        &mut self,
+        translation_options: TranslationOptions,
+    ) {
+        self.translations.set_options(translation_options);
+        self.clear_message_row_content_metrics_cache();
     }
 
     #[cfg(test)]
@@ -320,6 +329,10 @@ impl DashboardState {
         self.options.display_options.image_preview_quality
     }
 
+    pub fn animate_previews(&self) -> AnimatePreviews {
+        self.options.display_options.animate_previews
+    }
+
     pub fn attachment_viewer_quality(&self) -> ImagePreviewQualityPreset {
         self.options.display_options.attachment_viewer_quality
     }
@@ -365,6 +378,8 @@ impl DashboardState {
             notifications: self.options.notification_options.clone(),
             voice: self.options.voice_options.clone(),
             presence: self.options.presence_options,
+            translation: self.translations.options().clone(),
+            klipy: self.klipy.options.clone(),
         })
     }
 

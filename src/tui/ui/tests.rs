@@ -19,73 +19,88 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use super::{
-    DisplayOptionGauge, ImagePreview, ImagePreviewState, MESSAGE_AVATAR_OFFSET, MemberEntry,
+    DisplayOptionGauge, EmojiReactionPickerRenderOptions, ImagePreview, ImagePreviewState,
+    InteractionMap, InteractionTarget, MESSAGE_AVATAR_OFFSET, MemberEntry,
     active_selectable_popup_layout, attachment_viewer_image_area, attachment_viewer_popup,
     background_media_occlusion_areas, centered_viewer_preview_area,
     channel_action_menu_lines_for_test, channel_prefix, channel_switcher_cursor_position,
     channel_switcher_lines, channel_unread_decoration, clear_area, composer_content_line_count,
     composer_cursor_position, composer_lines, composer_lines_with_loaded_custom_emoji_urls,
-    composer_prompt_line_count, composer_text, dashboard_areas, date_separator_line,
-    debug_log_popup_lines, dm_presence_dot_span, emoji_picker_lines, emoji_reaction_picker_lines,
-    emoji_reaction_picker_lines_for_width, emoji_reaction_picker_lines_with_own_reactions,
-    filtered_emoji_reaction_picker_lines, focus_pane_at, folder_settings_input_line_for_test,
-    format_message_sent_time, highlight_style, inline_image_preview_area, inline_image_preview_row,
-    keymap_help_popup_lines, long_message_confirmation_lines_for_test, member_display_label,
+    composer_prompt_line_count, dashboard_areas, date_separator_line, dm_presence_dot_span,
+    emoji_picker_lines, emoji_reaction_picker_lines_with_custom_emoji_images,
+    folder_settings_input_line_for_test, highlight_style, inline_image_preview_area,
+    keymap_help_popup_lines, long_message_confirmation_lines, member_display_label,
     member_name_style, mention_picker_lines_for_test, message_action_menu_lines,
     message_action_menu_lines_with_keymap_options, message_areas, message_author_style,
-    message_body_custom_emoji_rows, message_delete_confirmation_lines, message_item_lines,
-    message_pin_confirmation_lines, message_remove_embeds_confirmation_lines,
-    message_url_picker_lines_for_width, message_viewport_layout, message_viewport_lines,
-    new_messages_notice_line, options_popup_lines, panel_block, poll_vote_picker_lines,
-    primary_activity_summary, quit_confirmation_lines, reaction_list_lines_with_ready_urls,
-    reaction_users_popup_lines, reaction_users_visible_line_count, render, render_channels,
-    render_composer, render_guilds, render_header, render_members, selected_avatar_x_offset,
-    selected_message_card_width, selected_message_content_x_offset, selection_marker,
-    stream_info_area, stream_info_lines, stream_info_lines_for_width, sync_composer_viewport,
-    sync_view_heights, theme, thread_card_reaction_summary, thread_card_tag_rows_for_test,
-    thread_card_viewport_lines, toast_line, user_profile_popup_avatar_viewport,
-    user_profile_popup_has_avatar, user_profile_popup_lines,
-    user_profile_popup_lines_with_activities, user_profile_popup_text,
-    user_profile_popup_text_geometry, verification_composer_text,
+    message_confirmation_lines, message_item_lines, message_viewport_layout,
+    message_viewport_lines, new_messages_notice_line, options_popup_lines, panel_block,
+    poll_vote_picker_lines, primary_activity_summary, quit_confirmation_popup_lines,
+    reaction_list_lines, reaction_user_lines, reaction_users_visible_line_count, render,
+    render_channels, render_composer, render_guilds, render_header, render_members,
+    render_message_url_picker, selected_message_card_width, selection_marker, stream_info_area,
+    stream_info_lines, stream_info_lines_for_width, sync_composer_viewport, sync_view_heights,
+    theme, thread_card_reaction_summary, thread_card_tag_rows_for_test, thread_card_viewport_lines,
+    toast_line, user_profile_popup_avatar_viewport, user_profile_popup_has_avatar,
+    user_profile_popup_text, user_profile_popup_text_geometry, verification_composer_text,
 };
-use crate::tui::message::time::{
-    discord_epoch_unix_millis, format_unix_millis_with_offset, message_starts_new_day,
-    test_message_id_for_unix_millis,
+use crate::tui::message::{
+    layout::MessageViewportPlan,
+    time::{
+        discord_epoch_unix_millis, format_message_local_time, message_starts_new_day,
+        test_message_id_for_unix_millis,
+    },
 };
 use crate::{
-    config::{DisplayOptions, KeymapBinding, KeymapOptions, UiStateOptions, VoiceOptions},
+    config::{
+        DisplayOptions, KeymapBinding, KeymapOptions, TranslationOptions, TranslationProviderKind,
+        UiStateOptions, VoiceOptions,
+    },
     discord::{
         ActivityEmoji, ActivityInfo, ActivityKind, AppEvent, ApplicationCommandInfo,
         ApplicationCommandOptionInfo, AttachmentDownloadId, AttachmentInfo, ChannelInfo,
         ChannelNotificationOverrideInfo, ChannelRecipientInfo, ChannelRecipientState, ChannelState,
-        ChannelUnreadState, ChannelVisibilityStats, CustomEmojiInfo, EmbedInfo, ForumTagInfo,
+        ChannelUnreadState, ComponentMediaInfo, CustomEmojiInfo, EmbedInfo, ForumTagInfo,
         GuildBoostTier, GuildFolder, GuildMemberListItem, GuildMemberListOperation,
-        GuildMemberListUpdateInfo, GuildMemberState, GuildNotificationSettingsInfo, MemberInfo,
-        MentionInfo, MessageAttachmentUpload, MessageInfo, MessageInteractionInfo, MessageKind,
-        MessageSearchPage, MessageSearchQuery, MessageSnapshotInfo, MessageState, MutualFriendInfo,
-        MutualGuildInfo, NotificationLevel, PollAnswerInfo, PollInfo, PresenceEventFields,
-        PresenceStatus, ReactionEmoji, ReactionInfo, ReactionUserInfo, ReadStateInfo, ReplyInfo,
-        RoleInfo, ThreadMetadataInfo, UserGuildSettingsInfo, UserProfileInfo, UserSettingsInfo,
+        GuildMemberListUpdateInfo, GuildMemberState, GuildNotificationSettingsInfo,
+        MESSAGE_FLAG_IS_COMPONENTS_V2, MemberInfo, MentionInfo, MessageAttachmentUpload,
+        MessageComponentInfo, MessageInfo, MessageInteractionInfo, MessageKind, MessageSearchPage,
+        MessageSearchQuery, MessageSnapshotInfo, MessageState, MutualFriendInfo, MutualGuildInfo,
+        NotificationLevel, PollAnswerInfo, PollInfo, PresenceEventFields, PresenceStatus,
+        ReactionEmoji, ReactionInfo, ReactionUserInfo, ReadStateInfo, ReplyInfo, RoleInfo,
+        ThreadMetadataInfo, UserGuildSettingsInfo, UserProfileInfo, UserSettingsInfo,
         VoiceConnectionStatus, VoiceStateInfo,
     },
     tui::{
         message::format::{
             MessageContentLine, format_message_content, format_message_content_lines,
             format_message_content_lines_with_loaded_custom_emoji_urls, lay_out_reaction_chips,
-            mention_highlight_style, poll_box_border, poll_card_inner_width,
-            reaction_line_test_spans, wrap_text_lines,
+            poll_box_border, poll_card_inner_width, reaction_line_test_spans, text_highlight_style,
+            wrap_text_lines,
         },
         state::{
             AppliedForumTag, AttachmentDownloadProgressView, AttachmentViewerZoom,
-            ChannelSwitcherItem, ChannelThreadItem, ComposerLock, DashboardState,
-            DisplayOptionItem, EmojiPickerEntry, EmojiReactionItem, FocusPane, MentionPickerEntry,
-            MentionPickerTarget, MessageActionItem, MessageActionKind, PollVotePickerItem,
-            SelectablePopupTarget, ThreadCardImagePreview, presence_style,
+            ChannelSwitcherDisplay, ChannelSwitcherItem, ChannelSwitcherMode, ChannelSwitcherView,
+            ChannelThreadItem, ComposerLock, ConfirmationButton, DashboardState, DisplayOptionItem,
+            EmojiPickerEntry, EmojiReactionItem, FocusPane, MentionPickerEntry,
+            MentionPickerTarget, MessageActionItem, MessageActionKind, MessageConfirmationKind,
+            PollVotePickerItem, SelectablePopupTarget, ThreadCardImagePreview, presence_style,
         },
         text::{EmojiImageSize, TextHighlightKind, truncate_display_width_from},
-        ui::{MouseTarget, mouse_target_at},
     },
 };
+
+fn interaction_at(
+    area: Rect,
+    state: &DashboardState,
+    column: u16,
+    row: u16,
+) -> Option<InteractionTarget> {
+    InteractionMap::new(area, state).target_at(column, row)
+}
+
+fn pane_at(area: Rect, state: &DashboardState, column: u16, row: u16) -> Option<FocusPane> {
+    InteractionMap::new(area, state).pane_at(column, row)
+}
 
 mod channel_switcher;
 mod composer;
@@ -600,6 +615,7 @@ fn channel_with_recipients(kind: &str, statuses: &[PresenceStatus]) -> ChannelSt
         kind: kind.to_owned(),
         message_count: None,
         member_count: None,
+        user_limit: None,
         total_message_sent: None,
         thread_metadata: None,
         flags: None,

@@ -1,9 +1,25 @@
 use std::path::{Path, PathBuf};
 
 use crate::discord::MessageAttachmentUpload;
-use crate::tui::state::DashboardState;
+use crate::tui::keybindings::PaneFilterAction;
+use crate::tui::state::{ActiveModalPopupKind, DashboardState};
 
 pub fn handle_paste(state: &mut DashboardState, text: &str) -> bool {
+    if state.gif_picker().is_some() {
+        if state.is_gif_query_editing() {
+            state.insert_gif_query(text);
+        }
+        return true;
+    }
+    if state.is_active_modal_popup(ActiveModalPopupKind::DebugLog) {
+        if state.debug_log_filter_cursor().is_none() {
+            return false;
+        }
+        for value in text.chars().filter(|value| !value.is_control()) {
+            state.apply_debug_log_filter_action(PaneFilterAction::InsertChar(value));
+        }
+        return true;
+    }
     if handle_pasted_user_profile_avatar(state, text) {
         return true;
     }

@@ -22,10 +22,13 @@ use crate::discord::test_builders::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use super::{MouseClickTracker, handle_key, handle_mouse, handle_mouse_event, handle_paste};
+use super::{MouseInputState, handle_key, handle_mouse, handle_mouse_event, handle_paste};
 use crate::discord::AppCommand;
 use crate::{
-    config::{AppOptions, DisplayOptions, ImagePreviewQualityPreset, KeymapBinding, KeymapOptions},
+    config::{
+        AppOptions, DisplayOptions, KeymapBinding, KeymapOptions, TranslationOptions,
+        TranslationProviderKind,
+    },
     discord::{
         ActivityInfo, AppEvent, ApplicationCommandInfo, ApplicationCommandOptionInfo,
         AttachmentDownloadId, ChannelInfo, ChannelNotificationOverrideInfo, ChannelRecipientInfo,
@@ -33,12 +36,14 @@ use crate::{
         GuildMemberListOperation, GuildMemberListUpdateInfo, GuildNotificationSettingsInfo,
         MemberInfo, MessageInfo, MessageReferenceInfo, MessageSnapshotInfo,
         MicrophoneSensitivityDb, NotificationLevel, PollAnswerInfo, PollInfo, PresenceEventFields,
-        PresenceStatus, ReactionEmoji, ReactionUserInfo, ReadStateInfo, RoleInfo,
-        UserGuildSettingsInfo, UserSettingsInfo, VoiceConnectionStatus, VoiceVolumePercent,
+        PresenceStatus, ReactionEmoji, ReactionUserInfo, ReadStateInfo, RichPresenceSelection,
+        RoleInfo, UserGuildSettingsInfo, UserProfileInfo, UserSettingsInfo, VoiceConnectionStatus,
+        VoiceVolumePercent,
     },
     tui::state::{
-        ChannelPaneEntry, DashboardState, FocusPane, GuildPaneEntry, MessageActionKind,
-        SelectablePopupTarget,
+        ChannelPaneEntry, DashboardState, FocusPane, FolderSettingsField, GuildPaneEntry,
+        MessageActionKind, MessagePaneSource, NotificationInboxTab, SelectablePopupTarget,
+        UserProfileSettingsField, UserProfileSettingsTab,
     },
 };
 
@@ -58,9 +63,9 @@ mod composer;
 mod leader;
 mod messages;
 mod misc;
-mod mouse;
 mod navigation;
 mod options;
+mod pointer;
 
 const PERM_VIEW_CHANNEL: u64 = 0x0000_0000_0000_0400;
 const PERM_ADD_REACTIONS: u64 = 0x0000_0000_0000_0040;
@@ -346,10 +351,16 @@ fn state_with_messages(count: u64) -> DashboardState {
 }
 
 fn state_with_channel_permissions(permissions: u64) -> DashboardState {
+    state_with_channel_permissions_from_state(DashboardState::new(), permissions)
+}
+
+fn state_with_channel_permissions_from_state(
+    mut state: DashboardState,
+    permissions: u64,
+) -> DashboardState {
     let guild_id = Id::new(1);
     let channel_id = Id::new(2);
     let current_user_id = Id::new(10);
-    let mut state = DashboardState::new();
     push_test_ready(&mut state, current_user_id);
     state.push_event(guild_create_event(message_test_guild_fixture(
         guild_id,

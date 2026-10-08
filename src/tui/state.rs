@@ -12,6 +12,7 @@ mod diagnostics;
 mod discord_ui;
 mod emoji;
 mod events;
+pub(in crate::tui) mod gif_picker;
 mod guilds;
 mod layout_cache;
 mod local_upload_preview;
@@ -34,6 +35,7 @@ mod stream_info;
 mod subscriptions;
 mod text_completion;
 mod toast;
+mod translation;
 mod user;
 mod voice_actions;
 
@@ -42,7 +44,7 @@ use composer::ComposerUiState;
 use discord_ui::DiscordUiState;
 use layout_cache::{LayoutCacheState, MessageRowContentMetrics, MessageRowContentMetricsCacheKey};
 use message_history_refresh::MessageHistoryRefreshState;
-use message_render::{add_literal_mention_highlights, normalize_text_highlights};
+use message_render::{add_literal_mention_highlights, normalize_mention_highlights};
 use message_viewport::{MessageViewportState, ThreadReturnTarget};
 use model::ChannelPaneCursor;
 use navigation::{ActiveGuildScope, FolderKey, FolderSettingsState, NavigationState};
@@ -52,11 +54,13 @@ use pending_messages::PendingMessageUiState;
 use popups::PopupUiState;
 use request_tracking::RequestTrackingState;
 use runtime_state::{
-    MediaPlaybackPreparingUiState, RuntimeUiState, StreamBroadcastUiTarget, StreamPlaybackUiTarget,
-    ToastMessage, VoiceConnectionUiState,
+    ClipboardPasteRequest, ClipboardPasteTarget, MediaPlaybackPreparingUiState, RuntimeUiState,
+    StreamBroadcastUiTarget, StreamPlaybackUiTarget, ToastMessage, VoiceConnectionUiState,
 };
 pub(in crate::tui) use scroll::SCROLL_OFF;
 use scroll::clamp_selected_index;
+pub(in crate::tui) use translation::MessageTranslationDisplay;
+use translation::TranslationUiState;
 
 pub(in crate::tui) const MINIMUM_ESTABLISHED_DM_MESSAGES: usize = 5;
 
@@ -67,30 +71,32 @@ pub use composer::{
 };
 pub use dashboard::DashboardState;
 pub use member_grouping::{MemberEntry, MemberGroup};
+pub(super) use member_grouping::{MemberRow, MemberRows};
 pub use message_viewport::MessagePaneSource;
 #[cfg(test)]
-pub(crate) use model::ActionAvailability;
-pub(in crate::tui) use model::GuildBranch;
-pub(in crate::tui) use model::ThreadCardImagePreview;
+pub(crate) use model::{ActionAvailability, ChannelSwitcherDisplay};
 pub use model::{
     ActionItem, AppliedForumTag, AttachmentDownloadProgressView, AttachmentViewerItem,
     ChannelActionItem, ChannelPaneEntry, ChannelSearchSuggestionItem, ChannelSwitcherItem,
-    ChannelThreadItem, EmojiReactionItem, FocusPane, ForumPostComposerAttachmentView,
-    ForumPostComposerField, ForumPostComposerTagView, ForumPostComposerView,
-    GUILD_PANE_ENTRY_HEIGHT, GuildActionItem, GuildPaneEntry, LocalUploadPreviewView,
-    MemberActionItem, MemberSearchResultItem, MessageActionItem, MessageActionKind,
-    MessageSearchResultItem, MuteActionDurationItem, PollVotePickerItem, SearchFieldView,
-    SearchPopupMode, SearchPopupView, SearchResultItem, SearchSuggestionItem, ThreadActionItem,
-    ThreadEditField, ThreadEditTagView, ThreadEditView, ThreadMessagePreview,
+    ChannelSwitcherMode, ChannelSwitcherView, ChannelThreadItem, EmojiReactionItem, FocusPane,
+    ForumPostComposerAttachmentView, ForumPostComposerField, ForumPostComposerTagView,
+    ForumPostComposerView, GUILD_PANE_ENTRY_HEIGHT, GuildActionItem, GuildPaneEntry,
+    LocalUploadPreviewView, MemberActionItem, MemberSearchResultItem, MessageActionItem,
+    MessageActionKind, MessageSearchResultItem, MuteActionDurationItem, PollVotePickerItem,
+    SearchFieldView, SearchPopupMode, SearchPopupView, SearchResultItem, SearchSuggestionItem,
+    ThreadActionItem, ThreadEditField, ThreadEditTagView, ThreadEditView, ThreadMessagePreview,
     ThreadNotificationItem, ThreadSummary,
 };
 pub use model::{
     ChannelActionKind, GuildActionKind, MemberActionKind, MessageUrlItem, ThreadActionKind,
 };
+pub(in crate::tui) use model::{GuildBranch, ThreadCardImagePreview};
+pub(in crate::tui) use navigation::FolderSettingsField;
 pub use options::{DisplayOptionGauge, DisplayOptionItem};
 pub(in crate::tui) use popups::{
-    ActiveModalPopupKind, ConfirmationButton, MessageConfirmationKind, PopupInputMode,
-    PopupKeymapContext, SelectablePopupSnapshot, SelectablePopupTarget, VoiceParticipantAudioField,
+    ActiveModalPopupKind, ConfirmationButton, DebugLogLine, DebugMediaSnapshot,
+    MessageConfirmationKind, PopupInputMode, PopupKeymapContext, SelectablePopupSnapshot,
+    SelectablePopupTarget, VoiceParticipantAudioField,
 };
 pub use popups::{
     AttachmentViewerZoom, EmojiReactionPickerState, MessageActionMenuState, MessageUrlPickerState,

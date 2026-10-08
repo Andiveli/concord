@@ -69,7 +69,7 @@ define_ui_actions! {
     StartComposer => ("start composer", &[&[Char('i')]], Some(DashboardAction::StartComposer)),
     OpenPaneFilter => ("filter/search pane", &[&[Char('/')]], Some(DashboardAction::OpenFocusedPaneFilter)),
     ClosePopup => ("close popup", &[&[Char('q')]], None),
-    OpenDebugLog => ("open debug log", &[&[Char('`')]], None),
+    OpenDebugPanel => ("open debug panel", &[&[Char('`')]], None),
     FocusGuildPane => ("focus Servers", &[&[Char('1')]], Some(DashboardAction::FocusPane(FocusPane::Guilds))),
     FocusChannelPane => ("focus Channels", &[&[Char('2')]], Some(DashboardAction::FocusPane(FocusPane::Channels))),
     FocusMessagePane => ("focus Messages", &[&[Char('3')]], Some(DashboardAction::FocusPane(FocusPane::Messages))),
@@ -90,6 +90,7 @@ define_ui_actions! {
     ResizePaneRight => ("resize pane right", &[&[ModifiedKey(KeyCode::Char('l'), KeyModifiers::ALT)], &[ModifiedKey(KeyCode::Right, KeyModifiers::ALT)]], Some(DashboardAction::ResizePaneRight)),
     Quit => ("quit", &[&[Char('q')]], Some(DashboardAction::Quit)),
     CopyMessage => ("copy message", &[&[Char('y')]], None),
+    TranslateMessage => ("translate message", &[&[Char('T')]], None),
     ReactMessage => ("react", &[&[Char('r')]], None),
     ReplyMessage => ("reply", &[&[Char('R')]], None),
     DeleteMessage => ("delete message", &[&[Char('d')]], None),
@@ -163,6 +164,7 @@ macro_rules! define_message_action_bindings {
 
 define_message_action_bindings! {
     CopyContent => (CopyMessage, "CopyMessage"),
+    Translate => (TranslateMessage, "TranslateMessage"),
     OpenReactionPicker => (ReactMessage, "ReactMessage"),
     Reply => (ReplyMessage, "ReplyMessage"),
     OpenDeleteConfirmation => (DeleteMessage, "DeleteMessage"),
@@ -188,7 +190,7 @@ impl UiAction {
     }
 }
 
-/// Configurable navigation actions that are valid while a popup owns input.
+/// Configurable actions that are valid while a popup owns input.
 ///
 /// Popup closing is matched directly at the input boundary because it is a
 /// single-key command, not a navigable key sequence.
@@ -196,6 +198,7 @@ impl UiAction {
 pub(in crate::tui) enum PopupKeymapScope {
     Selectable,
     Scrollable,
+    FilterableScrollable,
     Confirmation,
 }
 
@@ -225,6 +228,7 @@ define_popup_actions! {
     HalfPageUp => HalfPageUp,
     JumpTop => JumpTop,
     JumpBottom => JumpBottom,
+    OpenFilter => OpenPaneFilter,
 }
 
 impl PopupAction {
@@ -233,11 +237,17 @@ impl PopupAction {
             Self::SelectNext | Self::SelectPrevious => true,
             Self::HalfPageDown | Self::HalfPageUp => matches!(
                 scope,
-                PopupKeymapScope::Selectable | PopupKeymapScope::Scrollable
+                PopupKeymapScope::Selectable
+                    | PopupKeymapScope::Scrollable
+                    | PopupKeymapScope::FilterableScrollable
             ),
             Self::JumpTop | Self::JumpBottom => {
-                matches!(scope, PopupKeymapScope::Selectable)
+                matches!(
+                    scope,
+                    PopupKeymapScope::Selectable | PopupKeymapScope::FilterableScrollable
+                )
             }
+            Self::OpenFilter => matches!(scope, PopupKeymapScope::FilterableScrollable),
         }
     }
 }
@@ -373,6 +383,8 @@ pub(in crate::tui) enum PaneFilterAction {
     DeleteChar,
     MoveCursorLeft,
     MoveCursorRight,
+    MoveCursorHome,
+    MoveCursorEnd,
     Ignore,
     InsertChar(char),
 }
@@ -453,6 +465,7 @@ pub(in crate::tui) enum VoiceParticipantAudioPopupAction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::tui) enum ComposerAction {
+    OpenGifPicker,
     OpenInEditor,
     PasteClipboard,
     InsertNewline,
@@ -460,6 +473,7 @@ pub(in crate::tui) enum ComposerAction {
     Close,
     ClearInput,
     RemoveLastAttachment,
+    Translate,
     EditText(TextEditAction),
     ToggleReplyPing,
     InsertChar(char),

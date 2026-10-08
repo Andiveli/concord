@@ -76,10 +76,6 @@ run the release installer:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chojs23/concord/releases/latest/download/concord-installer.sh | sh
 ```
 
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/chojs23/concord/releases/latest/download/concord-installer.ps1 | iex"
-```
-
 The installer places `concord` under `$CARGO_HOME/bin`.
 
 ### Runtime requirements
@@ -173,7 +169,7 @@ storage is unavailable. See the Security section below for details.
 ### Guilds & Channels
 
 - View, filter, and create forum/media posts (active / archived)
-- Switch channels, threads, and posts with the fuzzy channel switcher (`Space`, `Space`)
+- Switch channels, threads, and posts with the fuzzy channel switcher (`Space`, `Space`); start the query with `*` to search servers instead
 
 ### Messaging
 
@@ -182,6 +178,7 @@ storage is unavailable. See the Security section below for details.
 - Send custom emoji your account cannot use directly as image links when enabled
 - Rich content display (embeds, attachments, stickers, and mentions)
 - Detect URLs in message bodies and markdown links, then open them in your default browser
+- Translate messages and composer drafts
 
 #### Markdown Rendering & Code syntax highlighting
 
@@ -219,9 +216,16 @@ Linux screen capture depends on the active X11 or Wayland support.
 
 ### Rich Presence
 
-- Concord serves the local `discord-ipc` socket, detects connected apps, and
-  lets you pick which one to share from your profile's activity picker
+- Concord serves the local `discord-ipc` socket and relays Rich Presence from
+  connected apps automatically, like the native client: the most recently
+  updated app becomes your activity, your custom status is kept alongside it,
+  and the activity clears when the app disconnects
+- The profile settings activity picker can pin a specific app, switch back to
+  automatic, or set a manual activity RPC will not override
 - Only apps that speak Discord's Rich Presence (RPC/IPC) protocol are detected.
+- RPC apps connect to the first `discord-ipc` socket that answers, so a running
+  native desktop client (or Vesktop/LegCord/arRPC) receives them instead of
+  concord; concord shows a warning toast when it detects this
 - Toggle with `share_rich_presence` under `[presence]` in `config.toml`
 
 ### Notifications
@@ -259,6 +263,14 @@ With default vim-style navigation:
 `Ctrl+n` and `Ctrl+p` are fixed row movement keys. The default `j` and `k`
 row movement keys are `SelectNext` and `SelectPrevious` and can be changed in
 `keymap.toml`.
+
+### Mouse controls
+
+| Gesture           | Action                                               |
+| ----------------- | ---------------------------------------------------- |
+| Left click        | Focus a pane, select an item, or use a popup control |
+| Double left click | Activate the selected item like `Enter`              |
+| Right click       | Open the clicked entry actions                       |
 
 #### Leader key
 
@@ -302,6 +314,25 @@ selection.
 
 The composer supports copied file attachments and editing the current draft in
 `$EDITOR`. Pending uploads appear above the input before sending.
+
+#### GIF picker (KLIPY)
+
+Set `KLIPY_API_KEY` before launching Concord, or add an opt-in key to
+`config.toml`:
+
+```toml
+[klipy]
+api_key = "your-klipy-key"
+# Optional: read a different environment variable (takes precedence over api_key).
+# api_key_env = "MY_KLIPY_KEY"
+```
+
+Create a key in the [KLIPY Partner Panel](https://partner.klipy.com/) with **ads
+disabled**. Testing keys allow 100 API requests per hour; request production
+access through the panel when needed. Configure content filtering in the panel.
+See the [KLIPY integration requirements](https://docs.klipy.com/).
+
+`OpenGifPicker` can be remapped in `[keymap.composer]` in `keymap.toml`.
 
 #### Emoji picker
 
@@ -354,6 +385,12 @@ image_preview_quality = "balanced"
 # Attachment viewer quality: efficient, balanced, high, or original.
 attachment_viewer_quality = "original"
 
+# Which animated GIF and WebP previews keep playing: always, selected, or never.
+# Each animated frame rebuilds a terminal graphics protocol, so "always" costs
+# roughly 8% of a CPU core per animated preview on screen. Custom emoji animate
+# regardless; theirs are small enough not to matter.
+animate_previews = "always"
+
 # Render custom Discord emoji as images when possible.
 show_custom_emoji = true
 
@@ -373,8 +410,27 @@ emojis_as_links = false
 # favorite_emojis = ["🔥", "👍", "❤️", "😂", "🎉", "😮", "😢", "🙏", "👀", "💯"]
 
 [presence]
-# Relay Rich Presence from local apps as your activity.
+# Relay Rich Presence from local apps as your activity (most recent app wins,
+# like the native client).
 share_rich_presence = true
+
+[translation]
+# Translate selected messages and composer drafts when their target is set.
+# Supported providers: deepl or libretranslate.
+# provider = "deepl"
+# message_target_language = "KO"
+# composer_target_language = "EN"
+
+# Optional full API endpoint override. DeepL defaults to its Free API endpoint.
+# LibreTranslate defaults to http://127.0.0.1:5000/translate.
+# endpoint = "https://api.deepl.com/v2/translate"
+
+# Optional API key stored directly in this private config file.
+# api_key = "your-api-key"
+
+# Optional environment variable containing the API key. When set, its value
+# overrides api_key. DeepL checks DEEPL_API_KEY by default.
+# api_key_env = "DEEPL_API_KEY"
 
 [credentials]
 # Credential storage: auto, keychain, or plain.
@@ -388,13 +444,13 @@ desktop_notifications = true
 # Optional notification icon to include in notifications. May not work on all platforms.
 # When unset, no icon is used. It must either be a name of an icon (typically in /usr/share/icons)
 # or a path to an icon.
-notification_icon = "/path/to/icon.svg"
+# notification_icon = "/path/to/icon.svg"
 
 # Optional WAV files for message, voice join/leave notification sounds.
 # When unset, Concord uses built-in generated tones.
-notification_sound = "/path/to/message.wav"
-voice_join_sound = "/path/to/join.wav"
-voice_leave_sound = "/path/to/leave.wav"
+# notification_sound = "/path/to/message.wav"
+# voice_join_sound = "/path/to/join.wav"
+# voice_leave_sound = "/path/to/leave.wav"
 
 [voice]
 # Join or update Discord voice with Concord self-muted.
@@ -421,6 +477,13 @@ push_to_talk_shortcut = "F8"
 # Reduce steady background microphone noise.
 noise_suppression = true
 
+# Optional microphone capture buffer duration in milliseconds, from 10 to 60.
+# When omitted, Concord requests 50ms on Linux and 10ms on other platforms,
+# clamped to the device's supported range. It uses the host default only when
+# the range is unknown or the platform fixed buffer cannot be opened.
+# Setting a value forces that fixed duration.
+# microphone_buffer_ms = 50
+
 # Voice activity threshold in dB. Lower values transmit quieter input.
 microphone_sensitivity = -30
 
@@ -438,6 +501,43 @@ application.
 
 </details><br>
 
+### Message translation
+
+Press uppercase `T` in the Messages pane to translate the selected message.
+
+While editing the message composer, press `Ctrl-T` to translate the current
+draft. The composer shows the original above a `translated` divider and makes
+the translated draft editable. Press `Ctrl-T` again to return to the editable
+original.
+
+```toml
+[translation]
+provider = "deepl"
+message_target_language = "KO"
+composer_target_language = "EN"
+api_key = "your-deepl-api-key"
+```
+
+Both providers detect the source language automatically.
+
+The default DeepL endpoint is the Free API. DeepL Pro users can set
+`endpoint = "https://api.deepl.com/v2/translate"`.
+The `DEEPL_API_KEY` environment variable overrides `api_key` when present.
+
+LibreTranslate defaults to a local server and does not require an API key:
+
+```toml
+[translation]
+provider = "libretranslate"
+message_target_language = "KO"
+composer_target_language = "EN"
+```
+
+Set `endpoint` and `api_key` when using a hosted LibreTranslate instance.
+
+You can use `api_key_env` instead when an environment-based secret is more
+convenient.
+
 ### Key bindings
 
 See [Keymap options](./docs/keymap-options.md) for the config format and
@@ -452,7 +552,7 @@ leader = "space"
 StartComposer = "i"
 OpenPaneFilter = "/"
 ClosePopup = "q"
-OpenDebugLog = "`"
+OpenDebugPanel = "`"
 FocusGuildPane = "1"
 FocusChannelPane = "2"
 FocusMessagePane = "3"
@@ -473,6 +573,7 @@ ResizePaneLeft = { keys = ["<A-h>", "<A-left>"] }
 ResizePaneRight = { keys = ["<A-l>", "<A-right>"] }
 Quit = "q"
 CopyMessage = "y"
+TranslateMessage = "T"
 ReactMessage = "r"
 ReplyMessage = "R"
 DeleteMessage = "d"
@@ -520,6 +621,7 @@ ToggleMute = "u"
 
 [keymap.message_actions]
 CopyMessage = "y"
+TranslateMessage = "T"
 ReactMessage = "r"
 ReplyMessage = "R"
 DeleteMessage = "d"
@@ -559,6 +661,8 @@ Submit = "enter"
 Close = "esc"
 ClearInput = "<C-c>"
 RemoveLastAttachment = "delete"
+TranslateComposer = "<C-t>"
+OpenGifPicker = "<C-g>"
 DeletePreviousChar = "backspace"
 DeletePreviousWord = { keys = ["<A-backspace>", "<C-backspace>", "<C-w>"] }
 DeleteToLineStart = "<C-u>"
@@ -930,6 +1034,10 @@ bold = true
 
 [highlight.InlineCode]
 foreground = "#FFA500"
+
+[highlight.InlineTimestamp]
+foreground = "#DBDEE1"
+background = "#3B3C43"
 
 [highlight.MessageLink]
 foreground = "cyan"

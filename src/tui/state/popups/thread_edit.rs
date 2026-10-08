@@ -177,17 +177,7 @@ impl super::super::DashboardState {
             if popup.editing_tags && !popup.tag_order.is_empty() {
                 popup.tag_order.clone()
             } else {
-                available_tags
-                    .iter()
-                    .map(|tag| tag.id)
-                    .filter(|id| popup.selected_tag_ids.contains(id))
-                    .chain(
-                        available_tags
-                            .iter()
-                            .map(|tag| tag.id)
-                            .filter(|id| !popup.selected_tag_ids.contains(id)),
-                    )
-                    .collect()
+                forum_tag_order(available_tags, &popup.selected_tag_ids)
             };
         let cap_reached = popup.selected_tag_ids.len() >= MAX_FORUM_POST_TAGS;
         let guild_id = channel.guild_id;
@@ -280,6 +270,20 @@ impl super::super::DashboardState {
                 ThreadEditField::Cancel => ThreadEditField::Submit,
             };
         }
+    }
+
+    pub(in crate::tui) fn select_thread_edit_field(&mut self, field: ThreadEditField) -> bool {
+        let Some(popup) = self.popups.thread_edit_mut() else {
+            return false;
+        };
+        if (popup.editing_title && field != ThreadEditField::Title)
+            || (popup.editing_tags && field != ThreadEditField::Tags)
+        {
+            return false;
+        }
+        popup.active_field = field;
+        popup.pending_scroll_reveal = true;
+        true
     }
 
     pub fn move_thread_edit_selection_down(&mut self) {
@@ -512,17 +516,7 @@ impl super::super::DashboardState {
             .unwrap_or_default();
         // Available tags come from the parent forum, not the post thread.
         let available_tags = self.thread_edit_available_tags(channel_id);
-        let ordered: Vec<Id<ForumTagMarker>> = available_tags
-            .iter()
-            .map(|tag| tag.id)
-            .filter(|id| selected_ids.contains(id))
-            .chain(
-                available_tags
-                    .iter()
-                    .map(|tag| tag.id)
-                    .filter(|id| !selected_ids.contains(id)),
-            )
-            .collect();
+        let ordered = forum_tag_order(&available_tags, &selected_ids);
         let Some(popup) = self.popups.thread_edit_mut() else {
             return;
         };
@@ -611,6 +605,23 @@ fn cycle_index(index: usize, len: usize, forward: bool) -> usize {
     } else {
         index.saturating_sub(1)
     }
+}
+
+fn forum_tag_order(
+    available_tags: &[crate::discord::ForumTagInfo],
+    selected_ids: &[Id<ForumTagMarker>],
+) -> Vec<Id<ForumTagMarker>> {
+    available_tags
+        .iter()
+        .map(|tag| tag.id)
+        .filter(|id| selected_ids.contains(id))
+        .chain(
+            available_tags
+                .iter()
+                .map(|tag| tag.id)
+                .filter(|id| !selected_ids.contains(id)),
+        )
+        .collect()
 }
 
 /// Display-ready emoji fields for one forum tag, resolved for the tag picker.

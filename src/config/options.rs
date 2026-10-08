@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, fmt, path::PathBuf};
 
 use serde::{Deserialize, Serialize, de};
 
@@ -6,7 +6,7 @@ use crate::discord::ids::{
     Id,
     marker::{ChannelMarker, GuildMarker, UserMarker},
 };
-use crate::discord::{MicrophoneSensitivityDb, VoiceVolumePercent};
+use crate::discord::{MicrophoneBufferMs, MicrophoneSensitivityDb, VoiceVolumePercent};
 
 pub const DEFAULT_SERVER_WIDTH: u16 = 20;
 pub const DEFAULT_CHANNEL_LIST_WIDTH: u16 = 24;
@@ -22,6 +22,7 @@ pub struct DisplayOptions {
     pub image_preview_quality: ImagePreviewQualityPreset,
     pub attachment_viewer_quality: ImagePreviewQualityPreset,
     pub image_protocol: ImageProtocolPreference,
+    pub animate_previews: AnimatePreviews,
     pub show_custom_emoji: bool,
     pub circular_avatars: bool,
     pub hour_format_24: bool,
@@ -96,6 +97,8 @@ pub struct VoiceOptions {
     pub push_to_talk: bool,
     pub push_to_talk_shortcut: String,
     pub noise_suppression: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub microphone_buffer_ms: Option<MicrophoneBufferMs>,
     pub microphone_sensitivity: MicrophoneSensitivityDb,
     pub microphone_volume: VoiceVolumePercent,
     pub voice_output_volume: VoiceVolumePercent,
@@ -112,6 +115,7 @@ impl Default for VoiceOptions {
             push_to_talk: false,
             push_to_talk_shortcut: "F8".to_owned(),
             noise_suppression: true,
+            microphone_buffer_ms: None,
             microphone_sensitivity: MicrophoneSensitivityDb::default(),
             microphone_volume: VoiceVolumePercent::default(),
             voice_output_volume: VoiceVolumePercent::default(),
@@ -231,6 +235,55 @@ impl Default for PresenceOptions {
     }
 }
 
+#[derive(Clone, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TranslationOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<TranslationProviderKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_target_language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub composer_target_language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+}
+
+impl fmt::Debug for TranslationOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TranslationOptions")
+            .field("provider", &self.provider)
+            .field("message_target_language", &self.message_target_language)
+            .field("composer_target_language", &self.composer_target_language)
+            .field("endpoint", &self.endpoint)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("api_key_env", &self.api_key_env)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[non_exhaustive]
+pub enum TranslationProviderKind {
+    #[serde(rename = "deepl")]
+    DeepL,
+    #[serde(rename = "libretranslate")]
+    LibreTranslate,
+}
+
+impl TranslationProviderKind {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::DeepL => "DeepL",
+            Self::LibreTranslate => "LibreTranslate",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AppOptions {
@@ -241,6 +294,27 @@ pub struct AppOptions {
     pub notifications: NotificationOptions,
     pub voice: VoiceOptions,
     pub presence: PresenceOptions,
+    pub translation: TranslationOptions,
+    pub klipy: KlipyOptions,
+}
+
+/// Optional KLIPY integration. Keys are never included in diagnostic output.
+#[derive(Clone, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct KlipyOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+}
+
+impl fmt::Debug for KlipyOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KlipyOptions")
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("api_key_env", &self.api_key_env)
+            .finish()
+    }
 }
 
 /// Validated Highlight Group and UI definitions from `theme.toml`.
@@ -517,6 +591,7 @@ define_highlight_groups! {
     MessageAttachment => "MessageAttachment",
     ImageOverflow => "ImageOverflow",
     InlineCode => "InlineCode",
+    InlineTimestamp => "InlineTimestamp",
     MessageLink => "MessageLink",
     MentionSelf => "MentionSelf",
     MentionOther => "MentionOther",
@@ -538,12 +613,6 @@ define_highlight_groups! {
     Info => "Info",
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
-#[serde(default)]
-pub(super) struct KeymapFileOptions {
-    pub(super) keymap: KeymapOptions,
-}
-
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub(super) struct UiStateFileOptions {
@@ -560,17 +629,11 @@ pub struct VoiceParticipantPlaybackOption {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct UiStateOptions {
-    #[serde(default = "default_pane_visible")]
     pub guild_pane_visible: bool,
-    #[serde(default = "default_pane_visible")]
     pub channel_pane_visible: bool,
-    #[serde(default = "default_pane_visible")]
     pub member_pane_visible: bool,
-    #[serde(default = "default_server_width")]
     pub server_width: u16,
-    #[serde(default = "default_channel_list_width")]
     pub channel_list_width: u16,
-    #[serde(default = "default_member_list_width")]
     pub member_list_width: u16,
     pub collapsed_channel_categories: Vec<Id<ChannelMarker>>,
     pub collapsed_server_folder_ids: Vec<u64>,
@@ -588,9 +651,9 @@ impl Default for UiStateOptions {
             guild_pane_visible: true,
             channel_pane_visible: true,
             member_pane_visible: true,
-            server_width: default_server_width(),
-            channel_list_width: default_channel_list_width(),
-            member_list_width: default_member_list_width(),
+            server_width: DEFAULT_SERVER_WIDTH,
+            channel_list_width: DEFAULT_CHANNEL_LIST_WIDTH,
+            member_list_width: DEFAULT_MEMBER_LIST_WIDTH,
             collapsed_channel_categories: Vec::new(),
             collapsed_server_folder_ids: Vec::new(),
             collapsed_server_folder_guilds: Vec::new(),
@@ -598,22 +661,6 @@ impl Default for UiStateOptions {
             voice_participant_playback: Vec::new(),
         }
     }
-}
-
-fn default_pane_visible() -> bool {
-    true
-}
-
-fn default_server_width() -> u16 {
-    DEFAULT_SERVER_WIDTH
-}
-
-fn default_channel_list_width() -> u16 {
-    DEFAULT_CHANNEL_LIST_WIDTH
-}
-
-fn default_member_list_width() -> u16 {
-    DEFAULT_MEMBER_LIST_WIDTH
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
@@ -624,6 +671,37 @@ pub enum ImagePreviewQualityPreset {
     Balanced,
     High,
     Original,
+}
+
+/// How much of an animated preview keeps moving. Every animation frame costs a
+/// fresh terminal graphics protocol (~4ms and ~1.3MB for a message-pane
+/// preview), so animating each one on screen is what makes a busy channel
+/// expensive. Emoji are excluded: theirs cost ~87us and stay animated.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AnimatePreviews {
+    #[default]
+    Always,
+    Selected,
+    Never,
+}
+
+impl AnimatePreviews {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Selected => "selected",
+            Self::Never => "never",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Always => Self::Selected,
+            Self::Selected => Self::Never,
+            Self::Never => Self::Always,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
@@ -686,6 +764,7 @@ impl Default for DisplayOptions {
             media_playback: false,
             image_preview_quality: ImagePreviewQualityPreset::default(),
             attachment_viewer_quality: ImagePreviewQualityPreset::Original,
+            animate_previews: AnimatePreviews::default(),
             image_protocol: ImageProtocolPreference::default(),
             show_custom_emoji: true,
             circular_avatars: false,

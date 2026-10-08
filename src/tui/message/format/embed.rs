@@ -4,7 +4,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     discord::EmbedInfo,
     tui::{
-        message::time::format_rfc3339_local_time,
+        message::time::{format_rfc3339_local_time, render_discord_timestamps},
         text::{RenderedText, replace_custom_emoji_markup_in_rendered_with_images},
         theme,
     },
@@ -15,113 +15,119 @@ use super::{
     wrap_rendered_text_lines_with_loaded_custom_emoji_urls,
 };
 
-pub(super) fn format_embed_lines(
-    embeds: &[EmbedInfo],
-    message_content: Option<&str>,
-    show_custom_emoji: bool,
-    hour_format_24: bool,
-    width: usize,
-    loaded_custom_emoji_urls: &[String],
-) -> Vec<MessageContentLine> {
-    embeds
-        .iter()
-        .flat_map(|embed| {
-            format_embed(
-                embed,
-                message_content,
-                show_custom_emoji,
-                hour_format_24,
-                width,
-                loaded_custom_emoji_urls,
-            )
-        })
-        .collect()
+pub(super) struct EmbedFormatContext<'a> {
+    pub(super) message_content: Option<&'a str>,
+    pub(super) show_custom_emoji: bool,
+    pub(super) hour_format_24: bool,
+    pub(super) width: usize,
+    pub(super) loaded_custom_emoji_urls: &'a [String],
 }
 
-fn format_embed(
-    embed: &EmbedInfo,
-    message_content: Option<&str>,
-    show_custom_emoji: bool,
-    hour_format_24: bool,
-    width: usize,
-    loaded_custom_emoji_urls: &[String],
+pub(super) fn format_embed_lines(
+    embeds: &[EmbedInfo],
+    context: &EmbedFormatContext<'_>,
 ) -> Vec<MessageContentLine> {
+    let mut seen_urls = Vec::new();
+    let mut lines = Vec::new();
+    for embed in embeds {
+        if let Some(url) = embed.url.as_deref() {
+            if seen_urls.contains(&url) {
+                continue;
+            }
+            seen_urls.push(url);
+        }
+        lines.extend(format_embed(embed, context));
+    }
+    lines
+}
+
+fn format_embed(embed: &EmbedInfo, context: &EmbedFormatContext<'_>) -> Vec<MessageContentLine> {
     const PREFIX: &str = "  ▎ ";
-    let inner_width = width.saturating_sub(PREFIX.width()).max(1);
+    let inner_width = context.width.saturating_sub(PREFIX.width()).max(1);
     let mut lines = Vec::new();
 
-    push_embed_text(
-        &mut lines,
+    let provider = embed_label_with_url(
         embed.provider_name.as_deref(),
-        show_custom_emoji,
-        inner_width,
-        embed_provider_style(),
-        loaded_custom_emoji_urls,
+        embed.provider_url.as_deref(),
     );
     push_embed_text(
         &mut lines,
-        embed.author_name.as_deref(),
-        show_custom_emoji,
+        provider.as_deref(),
+        context,
+        inner_width,
+        embed_provider_style(),
+    );
+    let author = embed_label_with_url(embed.author_name.as_deref(), embed.author_url.as_deref());
+    push_embed_text(
+        &mut lines,
+        author.as_deref(),
+        context,
         inner_width,
         embed_author_style(),
-        loaded_custom_emoji_urls,
     );
     push_embed_text(
         &mut lines,
         embed.title.as_deref(),
-        show_custom_emoji,
+        context,
         inner_width,
         embed_title_style(),
-        loaded_custom_emoji_urls,
     );
     let description = embed.description.as_deref().map(plain_embed_text);
     push_embed_text(
         &mut lines,
         description.as_deref(),
-        show_custom_emoji,
+        context,
         inner_width,
         Style::default(),
-        loaded_custom_emoji_urls,
     );
-    for field in &embed.fields {
+    push_embed_fields(&mut lines, embed, context, inner_width);
+    let mut rendered_media_descriptions = Vec::new();
+    for (kind, description) in [
+        ("thumbnail", embed.thumbnail_description.as_deref()),
+        ("image", embed.image_description.as_deref()),
+        ("video", embed.video_description.as_deref()),
+    ] {
+        let Some(description) = description
+            .filter(|description| !description.trim().is_empty())
+            .filter(|description| embed.description.as_deref() != Some(*description))
+            .filter(|description| !rendered_media_descriptions.contains(description))
+        else {
+            continue;
+        };
+        rendered_media_descriptions.push(description);
         push_embed_text(
             &mut lines,
-            Some(field.name.as_str()),
-            show_custom_emoji,
+            Some(&format!("[{kind}: {description}]")),
+            context,
             inner_width,
-            embed_field_name_style(),
-            loaded_custom_emoji_urls,
-        );
-        push_embed_text(
-            &mut lines,
-            Some(field.value.as_str()),
-            show_custom_emoji,
-            inner_width,
-            Style::default(),
-            loaded_custom_emoji_urls,
+            embed_footer_style(),
         );
     }
-    let footer = format_embed_footer(embed, hour_format_24);
+    let footer = format_embed_footer(embed, context.hour_format_24);
     push_embed_text(
         &mut lines,
         footer.as_deref(),
-        show_custom_emoji,
+        context,
         inner_width,
         embed_footer_style(),
-        loaded_custom_emoji_urls,
     );
     for url in [&embed.url]
         .into_iter()
         .filter_map(|url| url.as_deref())
-        .filter(|url| !message_content.is_some_and(|content| content.contains(url)))
+        .filter(|url| {
+            !context
+                .message_content
+                .is_some_and(|content| content.contains(url))
+        })
+        .filter(|url| embed.provider_url.as_deref() != Some(*url))
+        .filter(|url| embed.author_url.as_deref() != Some(*url))
     {
         push_embed_text(
             &mut lines,
             Some(url),
-            show_custom_emoji,
+            context,
             inner_width,
             embed_url_style(),
-            loaded_custom_emoji_urls,
         );
     }
 
@@ -129,6 +135,68 @@ fn format_embed(
         .into_iter()
         .map(|line| prefix_message_content_line_with_style(PREFIX, embed_line_style(embed), line))
         .collect()
+}
+
+fn embed_label_with_url(label: Option<&str>, url: Option<&str>) -> Option<String> {
+    match (
+        label.filter(|value| !value.trim().is_empty()),
+        url.filter(|value| !value.trim().is_empty()),
+    ) {
+        (Some(label), Some(url)) => Some(format!("{label} · {url}")),
+        (Some(label), None) => Some(label.to_owned()),
+        (None, Some(url)) => Some(url.to_owned()),
+        (None, None) => None,
+    }
+}
+
+fn push_embed_fields(
+    lines: &mut Vec<MessageContentLine>,
+    embed: &EmbedInfo,
+    context: &EmbedFormatContext<'_>,
+    width: usize,
+) {
+    let mut index = 0usize;
+    while index < embed.fields.len() {
+        if embed.fields[index].inline {
+            let end = embed.fields[index..]
+                .iter()
+                .take(3)
+                .take_while(|field| field.inline)
+                .count()
+                .saturating_add(index);
+            let row = embed.fields[index..end]
+                .iter()
+                .map(|field| {
+                    format!(
+                        "{}: {}",
+                        plain_embed_text(&field.name),
+                        plain_embed_text(&field.value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" │ ");
+            push_embed_text(lines, Some(&row), context, width, embed_field_name_style());
+            index = end;
+            continue;
+        }
+
+        let field = &embed.fields[index];
+        push_embed_text(
+            lines,
+            Some(field.name.as_str()),
+            context,
+            width,
+            embed_field_name_style(),
+        );
+        push_embed_text(
+            lines,
+            Some(field.value.as_str()),
+            context,
+            width,
+            Style::default(),
+        );
+        index = index.saturating_add(1);
+    }
 }
 
 fn plain_embed_text(value: &str) -> String {
@@ -237,29 +305,29 @@ fn format_embed_footer(embed: &EmbedInfo, hour_format_24: bool) -> Option<String
 fn push_embed_text(
     lines: &mut Vec<MessageContentLine>,
     value: Option<&str>,
-    show_custom_emoji: bool,
+    context: &EmbedFormatContext<'_>,
     width: usize,
     style: Style,
-    loaded_custom_emoji_urls: &[String],
 ) {
     let Some(value) = value.filter(|value| !value.is_empty()) else {
         return;
     };
     // Skip the mention pass. Embeds never carry user mentions but custom
     // emojis in title/fields/footer must still produce slots.
-    let rendered = replace_custom_emoji_markup_in_rendered_with_images(
+    let rendered = render_discord_timestamps(
         RenderedText {
             text: value.to_owned(),
-            highlights: Vec::new(),
-            emoji_slots: Vec::new(),
+            ..RenderedText::default()
         },
-        show_custom_emoji,
+        context.hour_format_24,
     );
+    let rendered =
+        replace_custom_emoji_markup_in_rendered_with_images(rendered, context.show_custom_emoji);
     lines.extend(wrap_rendered_text_lines_with_loaded_custom_emoji_urls(
         rendered,
         width,
         style,
-        loaded_custom_emoji_urls,
+        context.loaded_custom_emoji_urls,
     ));
 }
 

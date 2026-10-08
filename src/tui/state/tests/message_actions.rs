@@ -1,28 +1,5 @@
 use super::*;
 
-#[test]
-fn poll_vote_actions_are_available_by_default() {
-    let mut state = state_with_messages(1);
-    state.focus_pane(FocusPane::Messages);
-    state.push_event(message_create_event(MessageCreateFixture {
-        guild_id: Some(Id::new(1)),
-        channel_id: Id::new(2),
-        message_id: Id::new(1),
-        author_id: Id::new(99),
-        poll: Some(poll_info(false)),
-        content: Some(String::new()),
-        ..guild_message_create_fixture()
-    }));
-
-    let actions = state.selected_message_action_items();
-    let poll_action = actions
-        .iter()
-        .find(|action| action.kind == MessageActionKind::OpenPollVotePicker)
-        .expect("poll action should exist");
-
-    assert_eq!(poll_action.label, "choose poll votes");
-    assert!(poll_action.is_enabled());
-}
 use crate::discord::test_builders::{
     AttachmentDownloadCompletedFixture, AttachmentDownloadFailedFixture,
     AttachmentDownloadProgressFixture, AttachmentDownloadStartedFixture,
@@ -33,6 +10,7 @@ use crate::discord::{
     AppCommand, AttachmentDownloadId, AttachmentMediaType, MESSAGE_FLAG_SUPPRESS_EMBEDS,
     MediaPlaybackSource, MediaPlaybackTarget,
 };
+use crate::tui::message::format::format_message_translation_lines;
 
 fn message_action(actions: &[MessageActionItem], kind: MessageActionKind) -> &MessageActionItem {
     actions
@@ -59,6 +37,7 @@ fn message_action_items_reflect_message_and_channel_capabilities() {
         actions.iter().map(|action| action.kind).collect::<Vec<_>>(),
         vec![
             MessageActionKind::CopyContent,
+            MessageActionKind::Translate,
             MessageActionKind::OpenReactionPicker,
             MessageActionKind::Reply,
             MessageActionKind::OpenDeleteConfirmation,
@@ -76,6 +55,7 @@ fn message_action_items_reflect_message_and_channel_capabilities() {
         ]
     );
     assert!(message_action(&actions, MessageActionKind::CopyContent).is_enabled());
+    assert!(!message_action(&actions, MessageActionKind::Translate).is_enabled());
     assert!(message_action(&actions, MessageActionKind::Reply).is_enabled());
     assert_eq!(
         message_action(&actions, MessageActionKind::ShowProfile).label,
@@ -141,6 +121,135 @@ fn message_action_items_reflect_message_and_channel_capabilities() {
 
     onboarding.direct_edit_selected_message();
     assert!(!onboarding.is_composing());
+}
+
+#[test]
+fn translate_message_action_covers_loading_ready_toggle_and_failure_states() {
+    let mut state = state_with_messages(1);
+    state.focus_pane(FocusPane::Messages);
+    state.apply_translation_options(crate::config::TranslationOptions {
+        provider: Some(crate::config::TranslationProviderKind::LibreTranslate),
+        message_target_language: Some("ko".to_owned()),
+        ..Default::default()
+    });
+    let message = state
+        .selected_message_state()
+        .expect("selected message should exist");
+    let message_id = message.id;
+    let content = message
+        .copyable_content()
+        .expect("selected message should contain text");
+
+    let command = state.activate_message_action_kind(MessageActionKind::Translate);
+
+    assert_eq!(
+        command,
+        Some(AppCommand::Translate {
+            request_id: 1,
+            target: crate::discord::TranslationTarget::Message(message_id),
+            target_language: "ko".to_owned(),
+            content: content.clone(),
+        })
+    );
+    let loading = format_message_translation_lines(
+        state
+            .selected_message_state()
+            .expect("selected message should remain available"),
+        &state,
+        40,
+    );
+    assert!(
+        loading
+            .iter()
+            .flat_map(|line| line.spans())
+            .any(|span| span.content.contains("Translating..."))
+    );
+    state.push_event(AppEvent::TranslationCompleted {
+        request_id: 1,
+        target: crate::discord::TranslationTarget::Message(message_id),
+        translated_text: "안녕하세요".to_owned(),
+    });
+    assert_eq!(
+        format_message_translation_lines(
+            state
+                .selected_message_state()
+                .expect("selected message should remain available"),
+            &state,
+            40,
+        )
+        .len(),
+        1
+    );
+
+    assert_eq!(
+        state.activate_message_action_kind(MessageActionKind::Translate),
+        None
+    );
+    assert!(
+        format_message_translation_lines(
+            state
+                .selected_message_state()
+                .expect("selected message should remain available"),
+            &state,
+            40,
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        state.activate_message_action_kind(MessageActionKind::Translate),
+        None
+    );
+    assert_eq!(
+        format_message_translation_lines(
+            state
+                .selected_message_state()
+                .expect("selected message should remain available"),
+            &state,
+            40,
+        )
+        .len(),
+        1
+    );
+
+    // A separate request in the same lifecycle test covers the terminal error state.
+    let mut state = state_with_messages(1);
+    state.focus_pane(FocusPane::Messages);
+    state.apply_translation_options(crate::config::TranslationOptions {
+        provider: Some(crate::config::TranslationProviderKind::LibreTranslate),
+        message_target_language: Some("ko".to_owned()),
+        ..Default::default()
+    });
+    let command = state
+        .activate_message_action_kind(MessageActionKind::Translate)
+        .expect("configured translation should emit a command");
+    let (request_id, message_id) = match command {
+        AppCommand::Translate {
+            request_id,
+            target: crate::discord::TranslationTarget::Message(message_id),
+            ..
+        } => (request_id, message_id),
+        command => panic!("unexpected command: {command:?}"),
+    };
+
+    state.push_event(AppEvent::TranslationFailed {
+        request_id,
+        target: crate::discord::TranslationTarget::Message(message_id),
+        message: "service unavailable".to_owned(),
+    });
+    let lines = format_message_translation_lines(
+        state
+            .selected_message_state()
+            .expect("selected message should remain available"),
+        &state,
+        80,
+    );
+    let rendered = lines
+        .into_iter()
+        .flat_map(|line| line.spans().into_iter())
+        .map(|span| span.content.into_owned())
+        .collect::<String>();
+
+    assert_eq!(rendered, "╰─ Translation failed: service unavailable");
 }
 
 #[test]
@@ -906,31 +1015,20 @@ fn message_action_detects_embed_urls() {
         vec![MessageInfo {
             content: Some("embed below".to_owned()),
             embeds: vec![EmbedInfo {
-                color: None,
-                provider_name: None,
-                author_name: None,
+                provider_url: Some("https://provider.example".to_owned()),
+                author_url: Some("https://author.example".to_owned()),
                 title: Some("Release notes".to_owned()),
                 description: Some("Read [docs](<https://docs.example/release>)".to_owned()),
-                timestamp: None,
                 fields: vec![EmbedFieldInfo {
                     name: "Links".to_owned(),
                     value: "Status https://status.example".to_owned(),
+                    inline: false,
                 }],
-                footer_text: None,
                 url: Some("https://app.example/releases/1".to_owned()),
                 thumbnail_url: Some("https://media.example/thumb.jpg".to_owned()),
-                thumbnail_proxy_url: None,
-                thumbnail_width: None,
-                thumbnail_height: None,
-                thumbnail_flags: 0,
                 image_url: Some("https://media.example/image.jpg".to_owned()),
-                image_proxy_url: None,
-                image_width: None,
-                image_height: None,
-                image_flags: 0,
-                gifv_image_url: None,
-                gifv_image_proxy_url: None,
                 video_url: Some("https://media.example/video.mp4".to_owned()),
+                ..EmbedInfo::test()
             }],
             ..message_info(Id::new(2), 1)
         }],
@@ -942,7 +1040,94 @@ fn message_action_detects_embed_urls() {
 
     assert_eq!(
         urls.into_iter().map(|item| item.url).collect::<Vec<_>>(),
-        vec!["https://app.example/releases/1"]
+        vec![
+            "https://app.example/releases/1",
+            "https://provider.example",
+            "https://author.example",
+            "https://media.example/thumb.jpg",
+            "https://media.example/image.jpg",
+            "https://media.example/video.mp4",
+            "https://docs.example/release",
+            "https://status.example",
+        ]
+    );
+}
+
+#[test]
+fn message_action_detects_components_v2_text_and_link_button_urls() {
+    let mut state = state_with_messages(1);
+    state.push_event(latest_history_loaded(
+        Id::new(2),
+        vec![MessageInfo {
+            content: Some(String::new()),
+            flags: MESSAGE_FLAG_IS_COMPONENTS_V2,
+            components: vec![MessageComponentInfo::Container {
+                accent_color: None,
+                spoiler: false,
+                components: vec![
+                    MessageComponentInfo::TextDisplay {
+                        content: "Details: https://example.com/details".to_owned(),
+                    },
+                    MessageComponentInfo::ActionRow {
+                        components: vec![MessageComponentInfo::Button {
+                            label: Some("Open".to_owned()),
+                            emoji: None,
+                            url: Some("https://example.com/open".to_owned()),
+                            disabled: false,
+                        }],
+                    },
+                ],
+            }],
+            ..message_info(Id::new(2), 1)
+        }],
+    ));
+    state.focus_pane(FocusPane::Messages);
+    state.open_selected_message_actions();
+
+    let urls = state.selected_message_url_items();
+
+    assert_eq!(
+        urls.into_iter().map(|item| item.url).collect::<Vec<_>>(),
+        vec!["https://example.com/details", "https://example.com/open",]
+    );
+}
+
+#[test]
+fn components_v2_actions_copy_text_but_do_not_offer_invalid_content_edit() {
+    let mut state = state_with_messages(1);
+    state.push_event(latest_history_loaded(
+        Id::new(2),
+        vec![MessageInfo {
+            content: Some(String::new()),
+            flags: MESSAGE_FLAG_IS_COMPONENTS_V2,
+            components: vec![MessageComponentInfo::Container {
+                accent_color: None,
+                spoiler: false,
+                components: vec![
+                    MessageComponentInfo::TextDisplay {
+                        content: "First component".to_owned(),
+                    },
+                    MessageComponentInfo::TextDisplay {
+                        content: "Second component".to_owned(),
+                    },
+                ],
+            }],
+            ..message_info(Id::new(2), 1)
+        }],
+    ));
+    state.focus_pane(FocusPane::Messages);
+
+    let actions = state.selected_message_action_items();
+    assert!(message_action(&actions, MessageActionKind::CopyContent).is_enabled());
+    assert!(!message_action(&actions, MessageActionKind::Edit).is_enabled());
+
+    state.direct_copy_selected_message_content();
+    assert_eq!(
+        state.take_copy_text_request(),
+        Some((
+            "First component\nSecond component".to_owned(),
+            "Message copied"
+        ))
     );
 }
 
@@ -979,6 +1164,7 @@ fn message_action_detects_urls_in_reply_quote_and_forwarded_snapshot() {
             "https://reply.example/page",
             "https://forward.example/doc",
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
         ]
     );
 }
@@ -1042,6 +1228,11 @@ fn single_select_poll_action_opens_picker_and_submits_one_answer() {
         content: Some(String::new()),
         ..guild_message_create_fixture()
     }));
+    let actions = state.selected_message_action_items();
+    let poll_action = message_action(&actions, MessageActionKind::OpenPollVotePicker);
+    assert_eq!(poll_action.label, "choose poll votes");
+    assert!(poll_action.is_enabled());
+
     state.open_selected_message_actions();
 
     let poll_index = message_action_index(
@@ -1132,6 +1323,7 @@ fn multi_select_poll_action_opens_picker_and_submits_selected_answers() {
         message_action(&actions, MessageActionKind::OpenPollVotePicker).label,
         "choose poll votes"
     );
+    assert!(message_action(&actions, MessageActionKind::OpenPollVotePicker).is_enabled());
 
     state.open_selected_message_actions();
     let poll_index = message_action_index(

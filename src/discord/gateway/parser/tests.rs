@@ -9,8 +9,9 @@ use super::{
 use crate::discord::{
     ActivityKind, AppEvent, AttachmentUpdate, ChannelVisibilityStats, DiscordState, FriendStatus,
     GuildMemberListItem, GuildMemberListOperation, GuildOnboardingMode, GuildVerificationLevel,
-    MentionInfo, MessageKind, NotificationLevel, PollAnswerInfo, PollInfo, PremiumTier,
-    PresenceStatus, ReactionEmoji, ReplyInfo, StickerInfo,
+    MESSAGE_FLAG_IS_COMPONENTS_V2, MentionInfo, MessageComponentInfo, MessageKind,
+    NotificationLevel, PollAnswerInfo, PollInfo, PremiumTier, PresenceStatus, ReactionEmoji,
+    ReplyInfo, StickerInfo,
 };
 
 #[test]
@@ -911,7 +912,8 @@ fn relationship_remove_emits_event() {
 }
 
 #[test]
-fn channel_parser_keeps_last_message_id() {
+fn channel_parser_preserves_scalar_and_dm_fields() {
+    let case = "channel_parser_keeps_last_message_id";
     let channel = parse_channel_info(
         &json!({
             "id": "10",
@@ -923,11 +925,27 @@ fn channel_parser_keeps_last_message_id() {
     )
     .expect("dm channel should parse");
 
-    assert_eq!(channel.last_message_id.map(|id| id.get()), Some(99));
-}
+    assert_eq!(
+        channel.last_message_id.map(|id| id.get()),
+        Some(99),
+        "{case}"
+    );
 
-#[test]
-fn channel_parser_reads_dm_message_request_and_spam_flags() {
+    let case = "channel_parser_reads_voice_user_limit";
+    let channel = parse_channel_info(
+        &json!({
+            "id": "10",
+            "type": 2,
+            "name": "Lobby",
+            "user_limit": 5
+        }),
+        Some(Id::new(1)),
+    )
+    .expect("voice channel should parse");
+
+    assert_eq!(channel.user_limit, Some(5), "{case}");
+
+    let case = "channel_parser_reads_dm_message_request_and_spam_flags";
     let channel = parse_channel_info(
         &json!({
             "id": "10",
@@ -940,8 +958,8 @@ fn channel_parser_reads_dm_message_request_and_spam_flags() {
     )
     .expect("dm channel should parse");
 
-    assert_eq!(channel.is_message_request, Some(true));
-    assert_eq!(channel.is_spam, Some(true));
+    assert_eq!(channel.is_message_request, Some(true), "{case}");
+    assert_eq!(channel.is_spam, Some(true), "{case}");
 }
 
 #[test]
@@ -1975,6 +1993,40 @@ fn message_update_parser_distinguishes_absent_and_empty_attachments() {
 }
 
 #[test]
+fn message_update_parser_distinguishes_absent_and_empty_components() {
+    let cases = [
+        (
+            json!({
+                "id": "20",
+                "channel_id": "10",
+                "content": "edited"
+            }),
+            None,
+        ),
+        (
+            json!({
+                "id": "20",
+                "channel_id": "10",
+                "content": "edited",
+                "components": []
+            }),
+            Some(0),
+        ),
+    ];
+
+    for (payload, expected_len) in cases {
+        let event = parse_message_update(&payload).expect("message update should parse");
+        let AppEvent::MessageUpdateDispatch { update } = event else {
+            panic!("expected message update event");
+        };
+        assert_eq!(
+            update.fields.components.as_ref().map(Vec::len),
+            expected_len
+        );
+    }
+}
+
+#[test]
 fn message_update_parser_preserves_pin_state() {
     let event = parse_message_update(&json!({
         "id": "20",
@@ -2206,7 +2258,8 @@ fn guild_create_parser_accepts_member_user_id_without_nested_user() {
 }
 
 #[test]
-fn raw_guild_create_with_thin_current_member_hides_denied_channel() {
+fn raw_guild_create_with_thin_current_member_applies_overwrites() {
+    let case = "raw_guild_create_with_thin_current_member_hides_denied_channel";
     let event = parse_guild_create(&json!({
         "id": "1",
         "name": "guild",
@@ -2249,17 +2302,17 @@ fn raw_guild_create_with_thin_current_member_hides_denied_channel() {
         ChannelVisibilityStats {
             visible: 0,
             hidden: 1,
-        }
+        },
+        "{case}"
     );
     assert!(
         state
             .viewable_channels_for_guild(Some(Id::new(1)))
-            .is_empty()
+            .is_empty(),
+        "{case}"
     );
-}
 
-#[test]
-fn raw_guild_create_with_thin_current_member_keeps_role_based_access() {
+    let case = "raw_guild_create_with_thin_current_member_keeps_role_based_access";
     let event = parse_guild_create(&json!({
         "id": "1",
         "name": "guild",
@@ -2313,9 +2366,14 @@ fn raw_guild_create_with_thin_current_member_keeps_role_based_access() {
         ChannelVisibilityStats {
             visible: 1,
             hidden: 0,
-        }
+        },
+        "{case}"
     );
-    assert_eq!(state.viewable_channels_for_guild(Some(Id::new(1))).len(), 1);
+    assert_eq!(
+        state.viewable_channels_for_guild(Some(Id::new(1))).len(),
+        1,
+        "{case}"
+    );
 }
 
 #[test]
@@ -2522,7 +2580,8 @@ fn message_update_parser_keeps_poll_results() {
 }
 
 #[test]
-fn message_delete_bulk_dispatch_parses_deleted_message_ids() {
+fn message_delete_bulk_dispatch_handles_populated_and_empty_ids() {
+    let case = "message_delete_bulk_dispatch_parses_deleted_message_ids";
     let events = parse_user_account_event(
         &json!({
             "t": "MESSAGE_DELETE_BULK",
@@ -2535,22 +2594,20 @@ fn message_delete_bulk_dispatch_parses_deleted_message_ids() {
         .to_string(),
     );
 
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.len(), 1, "{case}");
     let AppEvent::MessageDeleteBulk {
         guild_id,
         channel_id,
         message_ids,
     } = &events[0]
     else {
-        panic!("expected message delete bulk event");
+        panic!("{case}: expected message delete bulk event");
     };
-    assert_eq!(*guild_id, Some(Id::new(1)));
-    assert_eq!(*channel_id, Id::new(10));
-    assert_eq!(message_ids, &vec![Id::new(20), Id::new(30)]);
-}
+    assert_eq!(*guild_id, Some(Id::new(1)), "{case}");
+    assert_eq!(*channel_id, Id::new(10), "{case}");
+    assert_eq!(message_ids, &vec![Id::new(20), Id::new(30)], "{case}");
 
-#[test]
-fn message_delete_bulk_dispatch_ignores_empty_deleted_message_ids() {
+    let case = "message_delete_bulk_dispatch_ignores_empty_deleted_message_ids";
     let events = parse_user_account_event(
         &json!({
             "t": "MESSAGE_DELETE_BULK",
@@ -2562,7 +2619,7 @@ fn message_delete_bulk_dispatch_ignores_empty_deleted_message_ids() {
         .to_string(),
     );
 
-    assert!(events.is_empty());
+    assert!(events.is_empty(), "{case}");
 }
 
 #[test]
@@ -2710,25 +2767,52 @@ fn message_create_parser_keeps_regular_embeds() {
         "content": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         "embeds": [{
             "type": "video",
+            "flags": 16,
             "color": 16711680,
-            "provider": { "name": "YouTube" },
+            "provider": {
+                "name": "YouTube",
+                "url": "https://www.youtube.com"
+            },
+            "author": {
+                "name": "Uploader",
+                "url": "https://www.youtube.com/@uploader"
+            },
             "title": "Example Video",
             "description": "A video description",
+            "fields": [{
+                "name": "Duration",
+                "value": "3:33",
+                "inline": true
+            }],
             "timestamp": "2026-05-13T15:22:03+00:00",
             "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             "thumbnail": {
                 "url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
                 "proxy_url": "https://images-ext-1.discordapp.net/external/thumb/hash/https/i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
                 "width": 480,
-                "height": 360
+                "height": 360,
+                "content_type": "image/jpeg",
+                "description": "Video thumbnail",
+                "flags": 32
             },
             "image": {
                 "url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
                 "proxy_url": "https://images-ext-2.discordapp.net/external/image/hash/https/i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
                 "width": 1280,
-                "height": 720
+                "height": 720,
+                "content_type": "image/jpeg",
+                "description": "Video still",
+                "flags": 32
             },
-            "video": { "url": "https://www.youtube.com/embed/dQw4w9WgXcQ" }
+            "video": {
+                "url": "https://www.youtube.com/embed/dQw4w9WgXcQ",
+                "proxy_url": "https://media.discordapp.net/external/video.mp4",
+                "width": 1920,
+                "height": 1080,
+                "content_type": "video/mp4",
+                "description": "Video player",
+                "flags": 32
+            }
         }]
     }))
     .expect("message create should parse");
@@ -2737,9 +2821,21 @@ fn message_create_parser_keeps_regular_embeds() {
         panic!("expected message create event");
     };
     assert_eq!(message.embeds.len(), 1);
+    assert_eq!(message.embeds[0].flags, 16);
     assert_eq!(message.embeds[0].color, Some(16711680));
+    assert_eq!(message.embeds[0].kind.as_deref(), Some("video"));
     assert_eq!(message.embeds[0].provider_name.as_deref(), Some("YouTube"));
+    assert_eq!(
+        message.embeds[0].provider_url.as_deref(),
+        Some("https://www.youtube.com")
+    );
+    assert_eq!(message.embeds[0].author_name.as_deref(), Some("Uploader"));
+    assert_eq!(
+        message.embeds[0].author_url.as_deref(),
+        Some("https://www.youtube.com/@uploader")
+    );
     assert_eq!(message.embeds[0].title.as_deref(), Some("Example Video"));
+    assert!(message.embeds[0].fields[0].inline);
     assert_eq!(
         message.embeds[0].timestamp.as_deref(),
         Some("2026-05-13T15:22:03+00:00")
@@ -2757,6 +2853,15 @@ fn message_create_parser_keeps_regular_embeds() {
     assert_eq!(message.embeds[0].thumbnail_width, Some(480));
     assert_eq!(message.embeds[0].thumbnail_height, Some(360));
     assert_eq!(
+        message.embeds[0].thumbnail_description.as_deref(),
+        Some("Video thumbnail")
+    );
+    assert_eq!(
+        message.embeds[0].thumbnail_content_type.as_deref(),
+        Some("image/jpeg")
+    );
+    assert_eq!(message.embeds[0].thumbnail_flags, 32);
+    assert_eq!(
         message.embeds[0].image_url.as_deref(),
         Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg")
     );
@@ -2769,13 +2874,38 @@ fn message_create_parser_keeps_regular_embeds() {
     assert_eq!(message.embeds[0].image_width, Some(1280));
     assert_eq!(message.embeds[0].image_height, Some(720));
     assert_eq!(
+        message.embeds[0].image_description.as_deref(),
+        Some("Video still")
+    );
+    assert_eq!(
+        message.embeds[0].image_content_type.as_deref(),
+        Some("image/jpeg")
+    );
+    assert_eq!(message.embeds[0].image_flags, 32);
+    assert_eq!(
         message.embeds[0].video_url.as_deref(),
         Some("https://www.youtube.com/embed/dQw4w9WgXcQ")
     );
+    assert_eq!(
+        message.embeds[0].video_proxy_url.as_deref(),
+        Some("https://media.discordapp.net/external/video.mp4")
+    );
+    assert_eq!(message.embeds[0].video_width, Some(1920));
+    assert_eq!(message.embeds[0].video_height, Some(1080));
+    assert_eq!(
+        message.embeds[0].video_content_type.as_deref(),
+        Some("video/mp4")
+    );
+    assert_eq!(
+        message.embeds[0].video_description.as_deref(),
+        Some("Video player")
+    );
+    assert_eq!(message.embeds[0].video_flags, 32);
 }
 
 #[test]
-fn message_create_parser_builds_giphy_animation_url_for_gifv() {
+fn message_create_parser_normalizes_gifv_media() {
+    let case = "message_create_parser_builds_giphy_animation_url_for_gifv";
     let event = parse_message_create(&json!({
         "id": "20",
         "channel_id": "10",
@@ -2799,52 +2929,53 @@ fn message_create_parser_builds_giphy_animation_url_for_gifv() {
     .expect("message create should parse");
 
     let AppEvent::MessageCreate { message } = event else {
-        panic!("expected message create event");
+        panic!("{case}: expected message create event");
     };
     assert_eq!(
         message.embeds[0].gifv_image_url.as_deref(),
-        Some("https://media2.giphy.com/media/hvY8Ahy9r340SU8xLY/giphy.webp?cid=discord")
+        Some("https://media2.giphy.com/media/hvY8Ahy9r340SU8xLY/giphy.webp?cid=discord"),
+        "{case}"
     );
-}
 
-#[test]
-fn message_create_parser_normalizes_non_giphy_gifv_thumbnail() {
+    let case = "message_create_parser_normalizes_non_giphy_gifv_thumbnail";
     let event = parse_message_create(&json!({
-        "id": "20",
-        "channel_id": "10",
-        "author": { "id": "30", "username": "neo" },
-        "content": "https://klipy.com/gifs/sleep-l0T",
-        "embeds": [{
-            "type": "gifv",
-            "url": "https://klipy.com/gifs/sleep-l0T",
-            "thumbnail": {
-                "url": "https://static.klipy.com/media/thumbnail.webp",
-                "proxy_url": "https://images-ext-1.discordapp.net/external/cache/https/static.klipy.com/media/thumbnail.webp",
-                "width": 498,
-                "height": 279,
-                "flags": 0
-            },
-            "video": {
-                "url": "https://static.klipy.com/media/video.mp4",
-                "width": 640,
-                "height": 358
-            }
-        }]
-    }))
-    .expect("message create should parse");
+            "id": "20",
+            "channel_id": "10",
+            "author": { "id": "30", "username": "neo" },
+            "content": "https://klipy.com/gifs/sleep-l0T",
+            "embeds": [{
+                "type": "gifv",
+                "url": "https://klipy.com/gifs/sleep-l0T",
+                "thumbnail": {
+                    "url": "https://static.klipy.com/media/thumbnail.webp",
+                    "proxy_url": "https://images-ext-1.discordapp.net/external/cache/https/static.klipy.com/media/thumbnail.webp",
+                    "width": 498,
+                    "height": 279,
+                    "flags": 0
+                },
+                "video": {
+                    "url": "https://static.klipy.com/media/video.mp4",
+                    "width": 640,
+                    "height": 358
+                }
+            }]
+        }))
+        .expect("message create should parse");
 
     let AppEvent::MessageCreate { message } = event else {
-        panic!("expected message create event");
+        panic!("{case}: expected message create event");
     };
     assert_eq!(
         message.embeds[0].gifv_image_url.as_deref(),
-        Some("https://static.klipy.com/media/thumbnail.webp")
+        Some("https://static.klipy.com/media/thumbnail.webp"),
+        "{case}"
     );
     assert_eq!(
         message.embeds[0].gifv_image_proxy_url.as_deref(),
         Some(
             "https://images-ext-1.discordapp.net/external/cache/https/static.klipy.com/media/thumbnail.webp"
-        )
+        ),
+        "{case}"
     );
 }
 
@@ -3040,7 +3171,8 @@ fn message_create_parser_builds_author_avatar_url() {
 }
 
 #[test]
-fn message_create_parser_keeps_mention_display_names() {
+fn message_create_parser_applies_mention_name_precedence() {
+    let case = "message_create_parser_keeps_mention_display_names";
     let event = parse_message_create(&json!({
         "id": "20",
         "channel_id": "10",
@@ -3072,11 +3204,15 @@ fn message_create_parser_keeps_mention_display_names() {
     .expect("message create should parse");
 
     let AppEvent::MessageCreate { message } = event else {
-        panic!("expected message create event");
+        panic!("{case}: expected message create event");
     };
-    assert!(message.mention_everyone);
-    assert_eq!(message.mention_roles, vec![Id::new(50), Id::new(51)]);
-    assert_eq!(message.flags, 4096);
+    assert!(message.mention_everyone, "{case}");
+    assert_eq!(
+        message.mention_roles,
+        vec![Id::new(50), Id::new(51)],
+        "{case}"
+    );
+    assert_eq!(message.flags, 4096, "{case}");
     assert_eq!(
         message.mentions,
         vec![
@@ -3084,12 +3220,11 @@ fn message_create_parser_keeps_mention_display_names() {
             mention_info(41, "Beta Global"),
             mention_info(42, "gamma"),
             mention_info(43, "unknown"),
-        ]
+        ],
+        "{case}"
     );
-}
 
-#[test]
-fn message_create_parser_does_not_store_empty_mention_nick() {
+    let case = "message_create_parser_does_not_store_empty_mention_nick";
     let event = parse_message_create(&json!({
         "id": "20",
         "channel_id": "10",
@@ -3105,13 +3240,14 @@ fn message_create_parser_does_not_store_empty_mention_nick() {
     .expect("message create should parse");
 
     let AppEvent::MessageCreate { message } = event else {
-        panic!("expected message create event");
+        panic!("{case}: expected message create event");
     };
-    assert_eq!(message.mentions, vec![mention_info(40, "alpha")]);
+    assert_eq!(message.mentions, vec![mention_info(40, "alpha")], "{case}");
 }
 
 #[test]
-fn message_create_parser_keeps_reply_preview() {
+fn message_create_parser_preserves_reply_preview_and_mentions() {
+    let case = "message_create_parser_keeps_reply_preview";
     let event = parse_message_create(&json!({
         "id": "20",
         "channel_id": "10",
@@ -3130,7 +3266,7 @@ fn message_create_parser_keeps_reply_preview() {
     .expect("message create should parse");
 
     let AppEvent::MessageCreate { message } = event else {
-        panic!("expected message create event");
+        panic!("{case}: expected message create event");
     };
     assert_eq!(
         message.reply,
@@ -3140,12 +3276,11 @@ fn message_create_parser_keeps_reply_preview() {
             content: Some("잘되는군".to_owned()),
             stickers: Vec::new(),
             mentions: Vec::new(),
-        })
+        }),
+        "{case}"
     );
-}
 
-#[test]
-fn message_create_parser_keeps_reply_mentions() {
+    let case = "message_create_parser_keeps_reply_mentions";
     let event = parse_message_create(&json!({
         "id": "20",
         "channel_id": "10",
@@ -3165,13 +3300,14 @@ fn message_create_parser_keeps_reply_mentions() {
     .expect("message create should parse");
 
     let AppEvent::MessageCreate { message } = event else {
-        panic!("expected message create event");
+        panic!("{case}: expected message create event");
     };
     assert_eq!(
         message
             .reply
             .and_then(|reply| reply.mentions.into_iter().next()),
-        Some(mention_info(40, "alice"))
+        Some(mention_info(40, "alice")),
+        "{case}"
     );
 }
 
@@ -3255,13 +3391,14 @@ fn message_create_parser_keeps_poll_result_embed() {
     let AppEvent::MessageCreate { message } = event else {
         panic!("expected message create event");
     };
-    assert_eq!(
-        message
-            .poll
-            .expect("poll result should map to poll info")
-            .total_votes,
-        Some(7)
-    );
+    let poll = message.poll.expect("poll result should map to poll info");
+    assert_eq!(poll.question, "오늘 뭐 먹지?");
+    assert_eq!(poll.total_votes, Some(7));
+    assert_eq!(poll.results_finalized, Some(true));
+    assert_eq!(poll.answers.len(), 1);
+    assert_eq!(poll.answers[0].answer_id, 1);
+    assert_eq!(poll.answers[0].text, "김치찌개");
+    assert_eq!(poll.answers[0].vote_count, Some(5));
 }
 
 #[test]
@@ -3417,6 +3554,7 @@ fn message_create_parser_keeps_forwarded_snapshot_fields() {
             "message": {
                 "content": "hello <@40>",
                 "timestamp": "2026-04-30T12:34:56.000000+00:00",
+                "flags": 32768,
                 "mentions": [{ "id": "40", "username": "alice" }],
                 "attachments": [{
                     "id": "41",
@@ -3430,7 +3568,11 @@ fn message_create_parser_keeps_forwarded_snapshot_fields() {
                 }],
                 "sticker_items": [
                     { "id": "42", "name": "Wave", "format_type": 1 }
-                ]
+                ],
+                "components": [{
+                    "type": 10,
+                    "content": "Forwarded component text"
+                }]
             }
         }, {
             "message": {
@@ -3457,6 +3599,10 @@ fn message_create_parser_keeps_forwarded_snapshot_fields() {
         Some("2026-04-30T12:34:56.000000+00:00")
     );
     assert_eq!(
+        message.forwarded_snapshots[0].flags,
+        MESSAGE_FLAG_IS_COMPONENTS_V2
+    );
+    assert_eq!(
         message.forwarded_snapshots[0].mentions,
         vec![mention_info(40, "alice")]
     );
@@ -3469,7 +3615,116 @@ fn message_create_parser_keeps_forwarded_snapshot_fields() {
         message.forwarded_snapshots[0].attachments[0].filename,
         "cat.png"
     );
+    assert!(matches!(
+        &message.forwarded_snapshots[0].components[0],
+        MessageComponentInfo::TextDisplay { content }
+            if content == "Forwarded component text"
+    ));
     assert_eq!(message.forwarded_snapshots[1].content.as_deref(), Some(""));
+}
+
+#[test]
+fn message_create_parser_keeps_components_v2_display_tree() {
+    let event = parse_message_create(&json!({
+        "id": "20",
+        "channel_id": "10",
+        "author": { "id": "30", "username": "fmbot", "bot": true },
+        "content": "",
+        "flags": MESSAGE_FLAG_IS_COMPONENTS_V2,
+        "attachments": [{
+            "id": "40",
+            "filename": "cover.png",
+            "url": "https://cdn.discordapp.com/cover.png",
+            "proxy_url": "https://media.discordapp.net/cover.png",
+            "content_type": "image/png",
+            "size": 2048,
+            "width": 640,
+            "height": 640
+        }],
+        "components": [{
+            "type": 17,
+            "accent_color": 0x3366cc,
+            "components": [{
+                "type": 10,
+                "content": "# Last.fm\n**neo** listened to a track"
+            }, {
+                "type": 9,
+                "components": [{
+                    "type": 10,
+                    "content": "Artist · Album"
+                }],
+                "accessory": {
+                    "type": 11,
+                    "media": { "url": "attachment://cover.png" },
+                    "description": "Album cover"
+                }
+            }, {
+                "type": 14,
+                "divider": true,
+                "spacing": 2
+            }, {
+                "type": 1,
+                "components": [{
+                    "type": 2,
+                    "style": 5,
+                    "label": "Open Last.fm",
+                    "url": "https://www.last.fm/user/neo"
+                }]
+            }]
+        }]
+    }))
+    .expect("Components V2 message should parse");
+
+    let AppEvent::MessageCreate { message } = event else {
+        panic!("expected message create event");
+    };
+    assert_eq!(message.flags, MESSAGE_FLAG_IS_COMPONENTS_V2);
+    assert_eq!(message.components.len(), 1);
+
+    let MessageComponentInfo::Container {
+        components,
+        accent_color,
+        spoiler,
+    } = &message.components[0]
+    else {
+        panic!("expected container component");
+    };
+    assert_eq!(*accent_color, Some(0x3366cc));
+    assert!(!spoiler);
+    assert!(matches!(
+        &components[0],
+        MessageComponentInfo::TextDisplay { content }
+            if content == "# Last.fm\n**neo** listened to a track"
+    ));
+    assert!(matches!(
+        &components[1],
+        MessageComponentInfo::Section { accessory: Some(accessory), .. }
+            if matches!(
+                accessory.as_ref(),
+                MessageComponentInfo::Thumbnail { media, description, spoiler }
+                    if media.url == "attachment://cover.png"
+                        && description.as_deref() == Some("Album cover")
+                        && !spoiler
+            )
+    ));
+    assert!(matches!(
+        &components[2],
+        MessageComponentInfo::Separator {
+            divider: true,
+            spacing: 2
+        }
+    ));
+    assert!(matches!(
+        &components[3],
+        MessageComponentInfo::ActionRow { components }
+            if matches!(
+                &components[0],
+                MessageComponentInfo::Button { label, url, disabled, .. }
+                    if label.as_deref() == Some("Open Last.fm")
+                        && url.as_deref() == Some("https://www.last.fm/user/neo")
+                        && !disabled
+            )
+    ));
 }
 
 fn mention_info(user_id: u64, display_name: &str) -> MentionInfo {
@@ -3497,7 +3752,8 @@ fn thread_payload(id: u64, name: &str) -> serde_json::Value {
 }
 
 #[test]
-fn parse_guild_create_reads_name_from_properties_object() {
+fn guild_create_name_precedence_supports_properties_fallback() {
+    let case = "parse_guild_create_reads_name_from_properties_object";
     // CLIENT_STATE_V2 nests guild metadata under `properties`. Concord looks
     // in both places so it can consume either documented gateway shape.
     let event = parse_guild_create(&json!({
@@ -3521,16 +3777,14 @@ fn parse_guild_create_reads_name_from_properties_object() {
         ..
     } = event
     else {
-        panic!("expected GuildCreate event");
+        panic!("{case}: expected GuildCreate event");
     };
-    assert_eq!(guild_id, Id::new(100));
-    assert_eq!(name, "Lazy Server");
-    assert_eq!(owner_id, Some(Id::new(42)));
-    assert_eq!(member_count, Some(7));
-}
+    assert_eq!(guild_id, Id::new(100), "{case}");
+    assert_eq!(name, "Lazy Server", "{case}");
+    assert_eq!(owner_id, Some(Id::new(42)), "{case}");
+    assert_eq!(member_count, Some(7), "{case}");
 
-#[test]
-fn parse_guild_create_prefers_root_name_when_both_locations_set() {
+    let case = "parse_guild_create_prefers_root_name_when_both_locations_set";
     // Guard against future Discord shape drift: if both root-level and
     // nested name are present, the root wins (matches what the official
     // client does).
@@ -3542,13 +3796,14 @@ fn parse_guild_create_prefers_root_name_when_both_locations_set() {
     .expect("guild_create payload should map");
 
     let AppEvent::GuildCreate { name, .. } = event else {
-        panic!("expected GuildCreate event");
+        panic!("{case}: expected GuildCreate event");
     };
-    assert_eq!(name, "Root Name");
+    assert_eq!(name, "Root Name", "{case}");
 }
 
 #[test]
-fn typing_start_extracts_channel_and_user_from_dm_payload() {
+fn typing_start_resolves_dm_and_embedded_member_users() {
+    let case = "typing_start_extracts_channel_and_user_from_dm_payload";
     // DM TYPING_START omits guild_id and embeds user_id directly.
     let events = parse_user_account_event(
         &json!({
@@ -3561,18 +3816,19 @@ fn typing_start_extracts_channel_and_user_from_dm_payload() {
         })
         .to_string(),
     );
-    assert!(matches!(
-        events.as_slice(),
-        [AppEvent::TypingStart { guild_id, channel_id, user_id, member }]
-            if *channel_id == Id::new(12345)
-                && *user_id == Id::new(99)
-                && guild_id.is_none()
-                && member.is_none()
-    ));
-}
+    assert!(
+        matches!(
+            events.as_slice(),
+            [AppEvent::TypingStart { guild_id, channel_id, user_id, member }]
+                if *channel_id == Id::new(12345)
+                    && *user_id == Id::new(99)
+                    && guild_id.is_none()
+                    && member.is_none()
+        ),
+        "{case}"
+    );
 
-#[test]
-fn typing_start_falls_back_to_member_user_id_when_top_level_missing() {
+    let case = "typing_start_falls_back_to_member_user_id_when_top_level_missing";
     // Some guild TYPING_START payloads only embed the user id under
     // `member.user.id`. Make sure we still surface the typer.
     let events = parse_user_account_event(
@@ -3597,20 +3853,23 @@ fn typing_start_falls_back_to_member_user_id_when_top_level_missing() {
         })
         .to_string(),
     );
-    assert!(matches!(
-        events.as_slice(),
-        [AppEvent::TypingStart { guild_id, channel_id, user_id, member }]
-            if *channel_id == Id::new(55)
-                && *user_id == Id::new(42)
-                && *guild_id == Some(Id::new(77))
-                && member.as_ref().is_some_and(|member|
-                    member.display_name == "Live Nick"
-                        && member.username.as_deref() == Some("typing-user")
-                        && member.is_bot
-                        && member.role_ids == vec![Id::new(90)]
-                        && member.role_ids_present
-                )
-    ));
+    assert!(
+        matches!(
+            events.as_slice(),
+            [AppEvent::TypingStart { guild_id, channel_id, user_id, member }]
+                if *channel_id == Id::new(55)
+                    && *user_id == Id::new(42)
+                    && *guild_id == Some(Id::new(77))
+                    && member.as_ref().is_some_and(|member|
+                        member.display_name == "Live Nick"
+                            && member.username.as_deref() == Some("typing-user")
+                            && member.is_bot
+                            && member.role_ids == vec![Id::new(90)]
+                            && member.role_ids_present
+                    )
+        ),
+        "{case}"
+    );
 }
 
 #[test]

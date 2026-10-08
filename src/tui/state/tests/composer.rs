@@ -16,6 +16,235 @@ use serde_json::json;
 
 const PERM_ATTACH_FILES: u64 = 0x0000_0000_0000_8000;
 
+fn enable_composer_translation(state: &mut DashboardState) {
+    state.apply_translation_options(crate::config::TranslationOptions {
+        provider: Some(crate::config::TranslationProviderKind::LibreTranslate),
+        composer_target_language: Some("en".to_owned()),
+        ..Default::default()
+    });
+}
+
+fn composer_with_translation() -> DashboardState {
+    let mut state = state_with_writable_channel();
+    enable_composer_translation(&mut state);
+    state.start_composer();
+    state.insert_composer_text_at_cursor("안녕하세요");
+    state
+}
+
+#[test]
+fn composer_translation_preserves_edited_drafts_and_retranslates_changed_original() {
+    let mut state = composer_with_translation();
+    let request_id = match state
+        .translate_composer_input()
+        .expect("configured translation should emit a command")
+    {
+        AppCommand::Translate {
+            request_id,
+            target: crate::discord::TranslationTarget::Composer,
+            target_language,
+            content,
+        } => {
+            assert_eq!(target_language, "en");
+            assert_eq!(content, "안녕하세요");
+            request_id
+        }
+        command => panic!("unexpected command: {command:?}"),
+    };
+    assert!(state.composer_translation_pending());
+    state.push_event(AppEvent::TranslationCompleted {
+        request_id,
+        target: crate::discord::TranslationTarget::Composer,
+        translated_text: "hello".to_owned(),
+    });
+
+    assert!(!state.composer_translation_pending());
+    assert_eq!(state.composer_input(), "hello");
+    assert_eq!(state.composer_translation_original(), Some("안녕하세요"));
+    assert_eq!(
+        state.toast_message().map(|toast| toast.text),
+        Some("Composer translated")
+    );
+
+    state.insert_composer_text_at_cursor("!");
+    assert_eq!(state.translate_composer_input(), None);
+    assert_eq!(state.composer_input(), "안녕하세요");
+    assert_eq!(state.composer_translation_original(), None);
+
+    assert_eq!(state.translate_composer_input(), None);
+    assert_eq!(state.composer_input(), "hello!");
+    assert_eq!(state.composer_translation_original(), Some("안녕하세요"));
+
+    assert_eq!(state.translate_composer_input(), None);
+    assert_eq!(state.composer_input(), "안녕하세요");
+
+    state.insert_composer_text_at_cursor(" 세계");
+    let request_id = match state
+        .translate_composer_input()
+        .expect("an edited original should be translated again")
+    {
+        AppCommand::Translate {
+            request_id,
+            target: crate::discord::TranslationTarget::Composer,
+            target_language,
+            content,
+        } => {
+            assert_eq!(target_language, "en");
+            assert_eq!(content, "안녕하세요 세계");
+            request_id
+        }
+        command => panic!("unexpected command: {command:?}"),
+    };
+    assert_eq!(state.composer_input(), "안녕하세요 세계");
+    assert!(state.composer_translation_pending());
+
+    state.push_event(AppEvent::TranslationCompleted {
+        request_id,
+        target: crate::discord::TranslationTarget::Composer,
+        translated_text: "hello world".to_owned(),
+    });
+
+    assert!(!state.composer_translation_pending());
+    assert_eq!(state.composer_input(), "hello world");
+    assert_eq!(
+        state.composer_translation_original(),
+        Some("안녕하세요 세계")
+    );
+
+    // Confirmed mentions and custom emoji keep their Discord wire semantics
+    // while only the surrounding natural language is sent through translation.
+    let mut semantic = state_with_writable_channel_and_members();
+    enable_composer_translation(&mut semantic);
+    semantic.push_event(AppEvent::CurrentUserCapabilities {
+        premium_tier: PremiumTier::Nitro,
+    });
+    semantic.push_event(AppEvent::GuildEmojisUpdate {
+        guild_id: Id::new(1),
+        emojis: vec![CustomEmojiInfo {
+            animated: true,
+            ..CustomEmojiInfo::test(Id::new(50), "party_time")
+        }],
+    });
+    semantic.start_composer();
+    semantic.push_composer_char('@');
+    semantic.push_composer_char('s');
+    assert!(semantic.confirm_composer_mention());
+    for ch in ":pa".chars() {
+        semantic.push_composer_char(ch);
+    }
+    assert!(semantic.confirm_composer_emoji());
+    semantic.insert_composer_text_at_cursor("안녕하세요");
+
+    let (request_id, provider_text) = match semantic
+        .translate_composer_input()
+        .expect("semantic composer translation should emit a command")
+    {
+        AppCommand::Translate {
+            request_id,
+            target: crate::discord::TranslationTarget::Composer,
+            content,
+            ..
+        } => (request_id, content),
+        command => panic!("unexpected command: {command:?}"),
+    };
+    assert!(!provider_text.contains("@Sally"));
+    assert!(!provider_text.contains(":party_time:"));
+    semantic.push_event(AppEvent::TranslationCompleted {
+        request_id,
+        target: crate::discord::TranslationTarget::Composer,
+        translated_text: provider_text.replace("안녕하세요", "hello"),
+    });
+
+    assert_eq!(semantic.composer_input(), "@Sally :party_time: hello");
+    let submitted = semantic
+        .submit_composer()
+        .expect("translated semantic draft should submit");
+    match submitted {
+        AppCommand::SendMessage { content, .. } => {
+            assert_eq!(content, "<@20> <a:party_time:50> hello");
+        }
+        command => panic!("unexpected command: {command:?}"),
+    }
+
+    let mut slash_command = composer_with_translation();
+    slash_command.replace_composer_input("/nick translated".to_owned());
+    assert_eq!(slash_command.translate_composer_input(), None);
+    assert_eq!(
+        slash_command.toast_message().map(|toast| toast.text),
+        Some("slash command drafts cannot be translated")
+    );
+
+    let mut cancelled = composer_with_translation();
+    cancelled.drain_pending_commands();
+    let request_id = match cancelled
+        .translate_composer_input()
+        .expect("translation should start before composer closes")
+    {
+        AppCommand::Translate { request_id, .. } => request_id,
+        command => panic!("unexpected command: {command:?}"),
+    };
+    cancelled.close_composer();
+    assert_eq!(
+        cancelled.drain_pending_commands(),
+        vec![AppCommand::CancelComposerTranslation { request_id }]
+    );
+}
+
+#[test]
+fn composer_translation_does_not_overwrite_newer_edits() {
+    let mut state = composer_with_translation();
+    state.drain_pending_commands();
+    let command = state
+        .translate_composer_input()
+        .expect("configured translation should emit a command");
+    let request_id = match command {
+        AppCommand::Translate { request_id, .. } => request_id,
+        command => panic!("unexpected command: {command:?}"),
+    };
+    assert!(state.composer_translation_pending());
+    state.insert_composer_text_at_cursor(" 세계");
+    assert!(!state.composer_translation_pending());
+    assert_eq!(
+        state.drain_pending_commands(),
+        vec![AppCommand::CancelComposerTranslation { request_id }]
+    );
+
+    state.push_event(AppEvent::TranslationCompleted {
+        request_id,
+        target: crate::discord::TranslationTarget::Composer,
+        translated_text: "hello".to_owned(),
+    });
+
+    assert_eq!(state.composer_input(), "안녕하세요 세계");
+    assert!(state.toast_message().is_none());
+}
+
+#[test]
+fn composer_translation_failure_preserves_the_draft_and_shows_an_error() {
+    let mut state = composer_with_translation();
+    let command = state
+        .translate_composer_input()
+        .expect("configured translation should emit a command");
+    let request_id = match command {
+        AppCommand::Translate { request_id, .. } => request_id,
+        command => panic!("unexpected command: {command:?}"),
+    };
+    assert!(state.composer_translation_pending());
+
+    state.push_event(AppEvent::TranslationFailed {
+        request_id,
+        target: crate::discord::TranslationTarget::Composer,
+        message: "service unavailable".to_owned(),
+    });
+
+    assert!(!state.composer_translation_pending());
+    assert_eq!(state.composer_input(), "안녕하세요");
+    assert_eq!(
+        state.toast_message().map(|toast| toast.text),
+        Some("Composer translation failed: service unavailable")
+    );
+}
+
 #[test]
 fn slow_mode_locks_composer_for_live_and_cached_self_messages() {
     let mut state = state_with_writable_channel();
@@ -569,7 +798,7 @@ fn forum_post_attachment_preview_waits_for_runtime_result() {
 
     assert!(matches!(
         state.forum_post_attachment_previews().first(),
-        Some(LocalUploadPreviewView::Loading { filename }) if filename == "screenshot.png"
+        Some(LocalUploadPreviewView::Loading { filename }) if *filename == "screenshot.png"
     ));
     let (attachment_index, generation, filename, upload) = state
         .take_pending_forum_post_attachment_preview()
@@ -587,8 +816,73 @@ fn forum_post_attachment_preview_waits_for_runtime_result() {
     assert!(matches!(
         state.forum_post_attachment_previews().first(),
         Some(LocalUploadPreviewView::Failed { filename, message })
-            if filename == "screenshot.png" && message == "decode failed"
+            if *filename == "screenshot.png" && *message == "decode failed"
     ));
+}
+
+#[test]
+fn reopened_forum_composer_ignores_previous_preview_results() {
+    for new_result_arrives_first in [false, true] {
+        let mut state = state_with_forum_post_channel(false);
+        state.start_composer();
+        state.add_pending_forum_post_attachments(vec![MessageAttachmentUpload::from_bytes(
+            "screenshot.png".to_owned(),
+            b"old image".to_vec(),
+        )]);
+        let (old_index, old_generation, old_filename, _) = state
+            .take_pending_forum_post_attachment_preview()
+            .expect("old preview is pending");
+
+        state.close_forum_post_composer();
+        state.start_composer();
+        // The same filename and index must not make an old result current.
+        state.add_pending_forum_post_attachments(vec![MessageAttachmentUpload::from_bytes(
+            "screenshot.png".to_owned(),
+            b"new image".to_vec(),
+        )]);
+        let (index, generation, filename, _) = state
+            .take_pending_forum_post_attachment_preview()
+            .expect("new preview is pending");
+        if new_result_arrives_first {
+            state.store_forum_post_attachment_preview_result(
+                index,
+                generation,
+                filename.clone(),
+                Err("new result".to_owned()),
+            );
+        }
+
+        state.store_forum_post_attachment_preview_result(
+            old_index,
+            old_generation,
+            old_filename,
+            Err("old result".to_owned()),
+        );
+        if !new_result_arrives_first {
+            assert!(matches!(
+                state.forum_post_attachment_previews().first(),
+                Some(LocalUploadPreviewView::Loading { .. })
+            ));
+            state.store_forum_post_attachment_preview_result(
+                index,
+                generation,
+                filename,
+                Err("new result".to_owned()),
+            );
+        }
+        assert!(matches!(
+            state.forum_post_attachment_previews().first(),
+            Some(LocalUploadPreviewView::Failed { message, .. }) if *message == "new result"
+        ));
+        assert_eq!(
+            state
+                .popups
+                .forum_post_composer()
+                .expect("new composer is open")
+                .attachments[0],
+            MessageAttachmentUpload::from_bytes("screenshot.png".to_owned(), b"new image".to_vec())
+        );
+    }
 }
 
 #[test]
@@ -708,6 +1002,50 @@ fn forum_post_editing_body(state: &mut DashboardState, title: &str) {
     state.activate_forum_post_composer(); // commit Title
     state.cycle_forum_post_field_next(); // Title -> Body
     state.activate_forum_post_composer(); // start editing Body
+}
+
+#[test]
+fn queued_forum_body_paste_does_not_move_to_title() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use crate::tui::input::handle_key;
+
+    let mut state = state_with_forum_post_channel(false);
+    forum_post_editing_body(&mut state, "Title");
+    let paste = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+
+    handle_key(&mut state, paste);
+    let first_request = state
+        .take_paste_clipboard_request()
+        .expect("Body requests a paste");
+    assert!(state.start_clipboard_paste(first_request));
+
+    // Keep the first read active while another request is queued in Body.
+    handle_key(&mut state, paste);
+    handle_key(&mut state, enter);
+    handle_key(
+        &mut state,
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+    );
+    assert!(!state.finish_clipboard_paste(first_request));
+
+    handle_key(&mut state, enter);
+    assert_eq!(
+        state
+            .forum_post_composer_view()
+            .map(|view| view.editing_field),
+        Some(Some(ForumPostComposerField::Title)),
+    );
+    assert_eq!(state.take_paste_clipboard_request(), None);
+
+    // Discarding the stale Body request must not block a fresh Title paste.
+    handle_key(&mut state, paste);
+    let title_request = state
+        .take_paste_clipboard_request()
+        .expect("Title requests its own paste");
+    assert!(state.start_clipboard_paste(title_request));
+    assert!(state.finish_clipboard_paste(title_request));
 }
 
 #[test]
@@ -1249,21 +1587,6 @@ fn active_channel_is_cleared_when_view_permission_is_revoked() {
     assert_eq!(state.selected_channel_id(), None);
     assert!(!state.is_composing());
     assert!(state.channel_pane_entries().is_empty());
-}
-
-#[test]
-fn debug_channel_visibility_reports_active_guild_counts() {
-    // The fixture's channel denies VIEW_CHANNEL on @everyone, so it
-    // shows up in the hidden bucket.
-    let state = state_with_view_denied_channel();
-    let stats = state.debug_channel_visibility();
-    assert_eq!(
-        stats,
-        ChannelVisibilityStats {
-            visible: 0,
-            hidden: 1,
-        }
-    );
 }
 
 #[test]
@@ -1940,11 +2263,18 @@ fn cancel_composer_clears_pending_upload_state() {
 
     let mut processing = state_with_messages(1);
     processing.start_composer();
-    assert!(processing.begin_clipboard_paste());
+    processing.request_paste_clipboard();
+    let request_id = processing
+        .take_paste_clipboard_request()
+        .expect("clipboard paste request");
+    assert!(processing.start_clipboard_paste(request_id));
+    assert!(processing.begin_clipboard_paste(request_id));
 
     processing.cancel_composer();
+    processing.start_composer();
 
     assert!(!processing.clipboard_paste_pending());
+    assert!(!processing.finish_clipboard_paste(request_id));
 }
 
 #[test]
@@ -1960,7 +2290,7 @@ fn composer_attachment_preview_waits_for_runtime_result() {
 
     assert!(matches!(
         state.composer_attachment_previews().first(),
-        Some(LocalUploadPreviewView::Loading { filename }) if filename == "screenshot.png"
+        Some(LocalUploadPreviewView::Loading { filename }) if *filename == "screenshot.png"
     ));
     let (attachment_index, generation, filename, upload) = state
         .take_pending_composer_attachment_preview()
@@ -1978,7 +2308,7 @@ fn composer_attachment_preview_waits_for_runtime_result() {
     assert!(matches!(
         state.composer_attachment_previews().first(),
         Some(LocalUploadPreviewView::Failed { filename, message })
-            if filename == "screenshot.png" && message == "decode failed"
+            if *filename == "screenshot.png" && *message == "decode failed"
     ));
 }
 
@@ -2005,7 +2335,7 @@ fn composer_attachment_preview_refreshes_when_images_are_enabled() {
     assert!(state.show_images());
     assert!(matches!(
         state.composer_attachment_previews().first(),
-        Some(LocalUploadPreviewView::Loading { filename }) if filename == "cat.png"
+        Some(LocalUploadPreviewView::Loading { filename }) if *filename == "cat.png"
     ));
 }
 

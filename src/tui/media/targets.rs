@@ -24,7 +24,7 @@ use super::super::{
 /// Wide-enough wrap width for the prefetch walk. URL emission is
 /// wrap-independent. It only needs to avoid slot truncation in reply previews.
 const EMOJI_PREFETCH_FORMAT_WIDTH: usize = 10_000;
-use super::AVATAR_PREVIEW_HEIGHT;
+use super::{AVATAR_PREVIEW_HEIGHT, protocol::replace_url_query};
 
 const EFFICIENT_IMAGE_PREVIEW_SOURCE_PIXELS_PER_COLUMN: u64 = 6;
 const IMAGE_PREVIEW_SOURCE_PIXELS_PER_COLUMN: u64 = 10;
@@ -57,9 +57,13 @@ enum YoutubeThumbnailSize {
 #[derive(Clone)]
 pub(in crate::tui) struct ImagePreviewTarget {
     pub(in crate::tui) viewer: bool,
+    /// Whether this preview belongs to the selected message, which decides
+    /// whether it animates under `AnimatePreviews::Selected`.
+    pub(in crate::tui) selected: bool,
     pub(in crate::tui) thread_card: bool,
     pub(in crate::tui) message_index: usize,
     pub(in crate::tui) preview_index: usize,
+    pub(in crate::tui) body_line_index: Option<usize>,
     pub(in crate::tui) preview_x_offset_columns: u16,
     pub(in crate::tui) preview_y_offset_rows: usize,
     pub(in crate::tui) preview_width: u16,
@@ -109,6 +113,12 @@ impl AvatarTarget {
 pub(in crate::tui) struct EmojiImageTarget {
     pub(super) url: String,
     pub(super) image_size: EmojiImageSize,
+}
+
+impl EmojiImageTarget {
+    pub(in crate::tui) fn url(&self) -> &str {
+        &self.url
+    }
 }
 
 const MAX_ALBUM_PREVIEW_TILES: usize = 4;
@@ -169,9 +179,11 @@ pub(in crate::tui) fn visible_image_preview_targets_from_plan(
         }
         return vec![ImagePreviewTarget {
             viewer: true,
+            selected: true,
             thread_card: false,
             message_index: 0,
             preview_index,
+            body_line_index: None,
             preview_x_offset_columns: 0,
             preview_y_offset_rows: 0,
             preview_width,
@@ -202,7 +214,7 @@ pub(in crate::tui) fn visible_image_preview_targets_from_plan(
             break;
         }
 
-        let previews = row.message.inline_previews();
+        let previews = row.message.flow_inline_previews();
         let album =
             image_preview_album_layout(&previews, layout.preview_width, layout.max_preview_height);
         let preview_top_base = row.body_top + row.metrics.body_rows() as isize;
@@ -218,9 +230,11 @@ pub(in crate::tui) fn visible_image_preview_targets_from_plan(
             if cell.width > 0 && cell.height > 0 && visible_top < visible_bottom {
                 targets.push(ImagePreviewTarget {
                     viewer: false,
+                    selected: row.selected,
                     thread_card: false,
                     message_index,
                     preview_index: cell.preview_index,
+                    body_line_index: None,
                     preview_x_offset_columns: cell.x_offset_columns,
                     preview_y_offset_rows: cell.y_offset_rows,
                     preview_width: cell.width,
@@ -235,6 +249,74 @@ pub(in crate::tui) fn visible_image_preview_targets_from_plan(
                     filename: preview.filename.to_owned(),
                 });
             }
+        }
+
+        let section_thumbnails = row.message.section_thumbnail_previews();
+        if section_thumbnails.is_empty() {
+            continue;
+        }
+        let content_lines =
+            format_message_content_lines(row.message, state, layout.content_width.max(8));
+        for (line_index, slot) in content_lines
+            .iter()
+            .enumerate()
+            .flat_map(|(line_index, line)| {
+                line.preview_slots
+                    .iter()
+                    .map(move |slot| (line_index, slot))
+            })
+        {
+            let Some((_, preview)) = section_thumbnails
+                .iter()
+                .find(|(index, _)| *index == slot.section_thumbnail_index)
+            else {
+                continue;
+            };
+            let (preview_width, preview_height) = image_preview_size_for_dimensions(
+                slot.width,
+                slot.height,
+                preview.width,
+                preview.height,
+                false,
+                layout.font_size,
+            );
+            if preview_width == 0 || preview_height == 0 {
+                continue;
+            }
+
+            let x_offset = slot
+                .col
+                .saturating_add(slot.width.saturating_sub(preview_width));
+            let centered_y = usize::from(slot.height.saturating_sub(preview_height) / 2);
+            let body_line_index = line_index.saturating_add(centered_y);
+            let preview_top = row.image_preview_row(Some(body_line_index), 0);
+            let preview_bottom = preview_top.saturating_add(preview_height as isize);
+            let visible_top = preview_top.max(0);
+            let visible_bottom = preview_bottom.min(layout.list_height as isize);
+            if visible_top >= visible_bottom {
+                continue;
+            }
+            let top_clip_rows = u16::try_from(visible_top - preview_top).unwrap_or(u16::MAX);
+            targets.push(ImagePreviewTarget {
+                viewer: false,
+                selected: row.selected,
+                thread_card: false,
+                message_index,
+                preview_index: previews.len().saturating_add(slot.section_thumbnail_index),
+                body_line_index: Some(body_line_index),
+                preview_x_offset_columns: x_offset,
+                preview_y_offset_rows: usize::from(top_clip_rows),
+                preview_width,
+                preview_height,
+                visible_preview_height: u16::try_from(visible_bottom - visible_top)
+                    .unwrap_or(u16::MAX),
+                top_clip_rows,
+                accent_color: None,
+                show_play_marker: preview.show_play_marker,
+                message_id: row.message.id,
+                url: preview_request_url(*preview, preview_width, preview_height, quality),
+                filename: preview.filename.to_owned(),
+            });
         }
     }
 
@@ -252,6 +334,7 @@ fn visible_thread_card_image_preview_targets(
         .saturating_sub(usize::from(scrollbar_visible))
         .max(4);
     let quality = state.image_preview_quality();
+    let focused = state.focused_thread_card_selection();
     let mut rendered_row = 0usize;
     let mut targets = Vec::new();
 
@@ -273,7 +356,10 @@ fn visible_thread_card_image_preview_targets(
             layout.font_size,
             quality,
         ) {
-            targets.push(target);
+            targets.push(ImagePreviewTarget {
+                selected: focused == Some(post_index),
+                ..target
+            });
         }
         rendered_row =
             rendered_row.saturating_add(thread_card::thread_card_height(post, card_width, true));
@@ -301,7 +387,7 @@ fn visible_embedded_thread_card_image_preview_targets(
                 .body_top
                 .saturating_add(row.metrics.header_rows as isize)
                 .saturating_add(1);
-            thread_card_image_preview_target(
+            let target = thread_card_image_preview_target(
                 &post,
                 message_index,
                 card_width,
@@ -310,7 +396,11 @@ fn visible_embedded_thread_card_image_preview_targets(
                 layout.list_height,
                 layout.font_size,
                 quality,
-            )
+            )?;
+            Some(ImagePreviewTarget {
+                selected: row.selected,
+                ..target
+            })
         })
         .collect()
 }
@@ -354,9 +444,11 @@ fn thread_card_image_preview_target(
 
     Some(ImagePreviewTarget {
         viewer: false,
+        selected: false,
         thread_card: true,
         message_index,
         preview_index: 0,
+        body_line_index: None,
         preview_x_offset_columns: card_left
             .saturating_add(slot.column)
             .saturating_add(slot.width.saturating_sub(preview_width)),
@@ -523,16 +615,7 @@ fn discord_media_proxy_preview_url(
         source_height,
         quality,
     );
-    let (base, query) = proxy_url.split_once('?').unwrap_or((proxy_url, ""));
-    let mut params = query
-        .split('&')
-        .filter(|param| !param.is_empty())
-        .filter(|param| {
-            let key = param.split_once('=').map_or(*param, |(key, _)| key);
-            !matches!(key, "format" | "quality" | "width" | "height" | "animated")
-        })
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let mut params = Vec::new();
     params.push(format!("format={DISCORD_MEDIA_PROXY_PREVIEW_FORMAT}"));
     if animated {
         params.push("animated=true".to_owned());
@@ -549,7 +632,11 @@ fn discord_media_proxy_preview_url(
     params.push(format!("width={width}"));
     params.push(format!("height={height}"));
 
-    format!("{base}?{}", params.join("&"))
+    replace_url_query(
+        proxy_url,
+        &["format", "quality", "width", "height", "animated"],
+        params,
+    )
 }
 
 fn discord_media_proxy_preview_dimensions(
@@ -725,17 +812,11 @@ pub(in crate::tui) fn visible_emoji_image_targets(state: &DashboardState) -> Vec
         return Vec::new();
     }
 
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut targets: Vec<EmojiImageTarget> = Vec::new();
+    let mut collector = EmojiTargetCollector::default();
 
     if state.is_composing() {
         for completion in state.composer_emoji_image_completions() {
-            push_emoji_image_target(
-                completion.url,
-                EmojiImageSize::Compact,
-                &mut seen,
-                &mut targets,
-            );
+            collector.push(completion.url, EmojiImageSize::Compact);
         }
     }
 
@@ -747,18 +828,14 @@ pub(in crate::tui) fn visible_emoji_image_targets(state: &DashboardState) -> Vec
             let window_end = (window_start + visible_items).min(candidates.len());
             for candidate in &candidates[window_start..window_end] {
                 if let Some(url) = candidate.custom_image_url.clone() {
-                    push_emoji_image_target(url, EmojiImageSize::Compact, &mut seen, &mut targets);
+                    collector.push(url, EmojiImageSize::Compact);
                 }
             }
         }
     }
 
     if state.is_active_modal_popup(ActiveModalPopupKind::UserProfile) {
-        push_activity_emoji_targets(
-            state.user_profile_popup_activities().iter(),
-            &mut seen,
-            &mut targets,
-        );
+        collector.push_activities(state.user_profile_popup_activities().iter());
     }
 
     if state.is_active_modal_popup(ActiveModalPopupKind::EmojiReactionPicker) {
@@ -775,7 +852,7 @@ pub(in crate::tui) fn visible_emoji_image_targets(state: &DashboardState) -> Vec
             let end = (start + visible_items).min(reactions.len());
             for reaction in &reactions[start..end] {
                 if let Some(url) = reaction.custom_image_url() {
-                    push_emoji_image_target(url, EmojiImageSize::Compact, &mut seen, &mut targets);
+                    collector.push(url, EmojiImageSize::Compact);
                 }
             }
         }
@@ -786,7 +863,7 @@ pub(in crate::tui) fn visible_emoji_image_targets(state: &DashboardState) -> Vec
     if let Some(popup) = state.reaction_users_popup() {
         for entry in popup.entries() {
             if let Some(url) = entry.emoji().custom_image_url() {
-                push_emoji_image_target(url, EmojiImageSize::Compact, &mut seen, &mut targets);
+                collector.push(url, EmojiImageSize::Compact);
             }
         }
     }
@@ -799,12 +876,12 @@ pub(in crate::tui) fn visible_emoji_image_targets(state: &DashboardState) -> Vec
                 continue;
             }
             if let Some(url) = reaction.emoji.custom_image_url() {
-                push_emoji_image_target(url, EmojiImageSize::Compact, &mut seen, &mut targets);
+                collector.push(url, EmojiImageSize::Compact);
             }
         }
         for line in format_message_content_lines(message, state, EMOJI_PREFETCH_FORMAT_WIDTH) {
             for slot in &line.image_slots {
-                push_emoji_image_target(slot.url.clone(), slot.image_size, &mut seen, &mut targets);
+                collector.push(slot.url.clone(), slot.image_size);
             }
         }
     }
@@ -814,63 +891,63 @@ pub(in crate::tui) fn visible_emoji_image_targets(state: &DashboardState) -> Vec
     for post in state.visible_thread_card_items() {
         for reaction in thread_card::thread_card_visible_reactions(&post) {
             if let Some(url) = reaction.emoji.custom_image_url() {
-                push_emoji_image_target(url, EmojiImageSize::Compact, &mut seen, &mut targets);
+                collector.push(url, EmojiImageSize::Compact);
             }
         }
         // Custom forum-tag emoji are overlaid as images on the card's tags row,
         // so their CDN urls also have to be fetched into the shared cache.
         for tag in &post.applied_tags {
             if let Some(url) = tag.custom_emoji_url.clone() {
-                push_emoji_image_target(url, EmojiImageSize::Compact, &mut seen, &mut targets);
+                collector.push(url, EmojiImageSize::Compact);
             }
         }
     }
 
     for member in state.flattened_members() {
-        push_activity_emoji_targets(
-            state.user_activities(member.user_id()).iter(),
-            &mut seen,
-            &mut targets,
-        );
+        collector.push_activities(state.user_activities(member.user_id()).iter());
     }
     for row in state.visible_channel_pane_rows() {
         if let Some(activity) = row.activity() {
-            push_activity_emoji_targets(std::iter::once(activity), &mut seen, &mut targets);
+            collector.push_activities(std::iter::once(activity));
         }
     }
 
-    targets
+    collector.finish()
 }
 
-fn push_emoji_image_target(
-    url: String,
-    image_size: EmojiImageSize,
-    seen: &mut HashSet<String>,
-    targets: &mut Vec<EmojiImageTarget>,
-) {
-    if seen.insert(url.clone()) {
-        targets.push(EmojiImageTarget { url, image_size });
-        return;
-    }
-
-    if image_size == EmojiImageSize::Standalone {
-        let target = targets
-            .iter_mut()
-            .find(|target| target.url == url)
-            .expect("seen emoji URL has a render target");
-        target.image_size = EmojiImageSize::Standalone;
-    }
+#[derive(Default)]
+struct EmojiTargetCollector {
+    seen: HashSet<String>,
+    targets: Vec<EmojiImageTarget>,
 }
 
-fn push_activity_emoji_targets<'a>(
-    activities: impl IntoIterator<Item = &'a ActivityInfo>,
-    seen: &mut HashSet<String>,
-    targets: &mut Vec<EmojiImageTarget>,
-) {
-    for activity in activities {
-        if let Some(url) = activity.emoji.as_ref().and_then(|emoji| emoji.image_url()) {
-            push_emoji_image_target(url, EmojiImageSize::Compact, seen, targets);
+impl EmojiTargetCollector {
+    fn push(&mut self, url: String, image_size: EmojiImageSize) {
+        if self.seen.insert(url.clone()) {
+            self.targets.push(EmojiImageTarget { url, image_size });
+            return;
         }
+
+        if image_size == EmojiImageSize::Standalone {
+            let target = self
+                .targets
+                .iter_mut()
+                .find(|target| target.url == url)
+                .expect("seen emoji URL has a render target");
+            target.image_size = EmojiImageSize::Standalone;
+        }
+    }
+
+    fn push_activities<'a>(&mut self, activities: impl IntoIterator<Item = &'a ActivityInfo>) {
+        for activity in activities {
+            if let Some(url) = activity.emoji.as_ref().and_then(|emoji| emoji.image_url()) {
+                self.push(url, EmojiImageSize::Compact);
+            }
+        }
+    }
+
+    fn finish(self) -> Vec<EmojiImageTarget> {
+        self.targets
     }
 }
 

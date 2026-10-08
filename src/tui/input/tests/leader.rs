@@ -1195,11 +1195,17 @@ fn leader_leader_switcher_printable_navigation_keys_type_into_search() {
     handle_key(&mut state, char_key('G'));
     handle_key(&mut state, char_key('x'));
 
-    assert_eq!(state.channel_switcher_query(), Some("jkggGx"));
-    assert_eq!(state.selected_channel_switcher_index(), Some(0));
+    assert_eq!(
+        state.channel_switcher_view().map(|view| view.query),
+        Some("jkggGx")
+    );
+    assert_eq!(
+        state.channel_switcher_view().map(|view| view.selected),
+        Some(0)
+    );
 
     handle_key(&mut state, key(KeyCode::PageDown));
-    assert_eq!(state.channel_switcher_query(), None);
+    assert!(state.channel_switcher_view().is_none());
 }
 
 #[test]
@@ -1210,16 +1216,28 @@ fn leader_leader_switcher_selection_aliases_move_selection() {
     handle_key(&mut state, char_key(' '));
 
     handle_key(&mut state, key(KeyCode::Down));
-    assert_eq!(state.selected_channel_switcher_index(), Some(1));
+    assert_eq!(
+        state.channel_switcher_view().map(|view| view.selected),
+        Some(1)
+    );
 
     handle_key(&mut state, key(KeyCode::Up));
-    assert_eq!(state.selected_channel_switcher_index(), Some(0));
+    assert_eq!(
+        state.channel_switcher_view().map(|view| view.selected),
+        Some(0)
+    );
 
     handle_key(&mut state, ctrl_key('n'));
-    assert_eq!(state.selected_channel_switcher_index(), Some(1));
+    assert_eq!(
+        state.channel_switcher_view().map(|view| view.selected),
+        Some(1)
+    );
 
     handle_key(&mut state, ctrl_key('p'));
-    assert_eq!(state.selected_channel_switcher_index(), Some(0));
+    assert_eq!(
+        state.channel_switcher_view().map(|view| view.selected),
+        Some(0)
+    );
 }
 
 #[test]
@@ -1237,7 +1255,10 @@ fn leader_leader_switcher_left_right_move_search_cursor() {
     handle_key(&mut state, key(KeyCode::Right));
     handle_key(&mut state, key(KeyCode::Backspace));
 
-    assert_eq!(state.channel_switcher_query(), Some("random"));
+    assert_eq!(
+        state.channel_switcher_view().map(|view| view.query),
+        Some("random")
+    );
     let command = handle_key(&mut state, key(KeyCode::Enter));
     assert_eq!(state.selected_channel_id(), Some(Id::new(12)));
     assert_eq!(
@@ -1310,17 +1331,52 @@ fn enter_opens_message_action_menu_and_space_opens_leader() {
 }
 
 #[test]
-fn leader_a_p_enters_pinned_message_view_from_channel_pane() {
-    let mut state = state_with_messages(1);
-    state.focus_pane(FocusPane::Channels);
-    handle_key(&mut state, char_key(' '));
-    handle_key(&mut state, char_key('a'));
+fn leader_channel_views_target_the_highlighted_filtered_channel() {
+    let target_channel_id = Id::new(12);
+    let cases = [
+        (
+            'p',
+            MessagePaneSource::PinnedMessages {
+                channel_id: target_channel_id,
+            },
+        ),
+        (
+            't',
+            MessagePaneSource::ChannelThreads {
+                channel_id: target_channel_id,
+            },
+        ),
+    ];
 
-    let command = handle_key(&mut state, char_key('p'));
+    for (shortcut, expected_source) in cases {
+        let mut state = state_with_channel_tree();
+        state.focus_pane(FocusPane::Channels);
+        handle_key(&mut state, char_key('/'));
+        for value in "random".chars() {
+            handle_key(&mut state, char_key(value));
+        }
+        handle_key(&mut state, key(KeyCode::Enter));
 
-    assert_eq!(command, None);
-    assert!(state.is_pinned_message_view());
-    assert!(!state.is_leader_active());
+        assert_eq!(state.selected_channel(), 0);
+        assert_eq!(
+            state.channel_pane_filtered_entries()[0].channel_id(),
+            Some(target_channel_id)
+        );
+
+        handle_key(&mut state, char_key(' '));
+        handle_key(&mut state, char_key('a'));
+        let command = handle_key(&mut state, char_key(shortcut));
+
+        assert_eq!(command, None);
+        assert_eq!(state.message_pane_source(), Some(expected_source));
+        assert!(!state.is_leader_active());
+        if shortcut == 'p' {
+            assert_eq!(state.selected_message(), 0);
+            assert_eq!(state.message_scroll(), 0);
+            assert_eq!(state.message_line_scroll(), 0);
+            assert!(!state.message_auto_follow());
+        }
+    }
 }
 
 #[test]

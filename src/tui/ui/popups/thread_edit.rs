@@ -1,6 +1,6 @@
 use super::*;
 use crate::tui::selection;
-use crate::tui::state::{ThreadEditField, ThreadEditTagView, ThreadEditView};
+use crate::tui::state::{ForumPostComposerTagView, ThreadEditField, ThreadEditView};
 use crate::tui::ui::emoji_overlay::overlay_emoji_column;
 
 const FORUM_POST_EDIT_POPUP_WIDTH: u16 = 78;
@@ -100,6 +100,42 @@ pub(in crate::tui::ui) fn thread_edit_popup_area(area: Rect) -> Rect {
     )
 }
 
+pub(in crate::tui::ui) fn thread_edit_field_at(
+    area: Rect,
+    state: &DashboardState,
+    column: u16,
+    row: u16,
+) -> Option<ThreadEditField> {
+    let view = state.thread_edit_view()?;
+    let popup = thread_edit_popup_area(area);
+    let content = popup_form_areas(popup).content;
+    if column < content.x
+        || column >= content.x.saturating_add(content.width)
+        || row < content.y
+        || row >= content.y.saturating_add(content.height)
+    {
+        return None;
+    }
+
+    let width = usize::from(content.width.saturating_sub(1)).max(1);
+    let layout = build_edit_layout(&view, width);
+    let document_row = state
+        .thread_edit_scroll()
+        .saturating_add(usize::from(row.saturating_sub(content.y)));
+    if (layout.title_row..layout.tags_row).contains(&document_row) {
+        Some(ThreadEditField::Title)
+    } else if view.is_forum_post && (layout.tags_row..layout.slow_mode_row).contains(&document_row)
+    {
+        Some(ThreadEditField::Tags)
+    } else if (layout.slow_mode_row..layout.auto_archive_row).contains(&document_row) {
+        Some(ThreadEditField::SlowMode)
+    } else if (layout.auto_archive_row..layout.lines.len()).contains(&document_row) {
+        Some(ThreadEditField::AutoArchive)
+    } else {
+        None
+    }
+}
+
 fn build_edit_layout(view: &ThreadEditView, width: usize) -> EditLayout {
     let status_field = view.status_field;
     let mut lines = Vec::new();
@@ -128,7 +164,7 @@ fn build_edit_layout(view: &ThreadEditView, width: usize) -> EditLayout {
         lines.push(popup_form_summary_line(
             "Tags",
             view.requires_tag,
-            &tag_summary(&view.tags, width),
+            &forum_tag_summary(&view.tags, width),
             (!view.tags.is_empty()).then_some("Enter ›"),
             view.active_field == ThreadEditField::Tags,
             !view.tags.is_empty(),
@@ -276,10 +312,11 @@ pub(in crate::tui::ui) fn render_thread_edit_tag_picker(
     let rows: Vec<Line<'static>> = tags[visible_range.clone()]
         .iter()
         .map(|tag| {
-            tag_line(
+            forum_tag_line(
                 tag,
                 usize::from(content.width),
                 tag_custom_emoji_ready(tag.custom_emoji_url.as_deref(), &ready_urls),
+                true,
             )
         })
         .collect();
@@ -340,7 +377,12 @@ pub(in crate::tui::ui) fn thread_edit_tag_picker_list_layout(
     )
 }
 
-fn tag_line(tag: &ThreadEditTagView, width: usize, thumbnail_ready: bool) -> Line<'static> {
+pub(super) fn forum_tag_line(
+    tag: &ForumPostComposerTagView,
+    width: usize,
+    thumbnail_ready: bool,
+    dim_unselectable: bool,
+) -> Line<'static> {
     let marker = if tag.active { "▸" } else { " " };
     let checkbox = if tag.selected { "[x]" } else { "[ ]" };
     let emoji = tag_emoji_text(
@@ -351,7 +393,7 @@ fn tag_line(tag: &ThreadEditTagView, width: usize, thumbnail_ready: bool) -> Lin
     );
     let style = if tag.active {
         highlight_style()
-    } else if !tag.selectable {
+    } else if dim_unselectable && !tag.selectable {
         theme::current().style(theme::HighlightGroup::Disabled)
     } else {
         Style::default()
@@ -405,7 +447,7 @@ pub(super) fn tag_custom_emoji_ready(
     custom_emoji_url.is_some_and(|url| ready_urls.iter().any(|ready| ready == url))
 }
 
-fn tag_summary(tags: &[ThreadEditTagView], width: usize) -> String {
+pub(super) fn forum_tag_summary(tags: &[ForumPostComposerTagView], width: usize) -> String {
     if tags.is_empty() {
         return "None".to_owned();
     }

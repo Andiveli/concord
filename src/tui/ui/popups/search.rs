@@ -1,5 +1,5 @@
-use super::super::message::list::format_message_sent_time;
 use super::*;
+use crate::tui::message::time::format_message_local_time;
 use crate::tui::state::{MemberSearchResultItem, SearchSuggestionItem};
 use crate::tui::ui::loading_indicator::AsciiLoadingIndicator;
 
@@ -65,6 +65,25 @@ pub(in crate::tui::ui) fn search_popup_area_for_state(
 ) -> Option<Rect> {
     let view = state.search_popup_view()?;
     Some(search_popup_area(area, &view))
+}
+
+pub(in crate::tui::ui) fn search_popup_field_at(
+    area: Rect,
+    state: &DashboardState,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let view = state.search_popup_view()?;
+    let layout = search_popup_render_layout(area, &view, state.animation_frame());
+    if column < layout.header.x
+        || column >= layout.header.x.saturating_add(layout.header.width)
+        || row < layout.header.y
+        || row >= layout.header.y.saturating_add(layout.header.height)
+    {
+        return None;
+    }
+    let field = usize::from(row.saturating_sub(layout.header.y));
+    (field < view.fields.len()).then_some(field)
 }
 
 struct SearchPopupRenderLayout {
@@ -179,12 +198,11 @@ fn search_popup_header_lines(
                 SearchPopupMode::Member => "Type to filter members".to_owned(),
             }
         };
-        push_wrapped_styled_popup_text(
-            &mut lines,
+        lines.extend(wrapped_styled_popup_lines(
             &status,
             width,
             theme::current().style(theme::HighlightGroup::Hint),
-        );
+        ));
     }
 
     lines
@@ -239,12 +257,11 @@ fn search_popup_result_lines(
 fn search_popup_footer_lines(view: &SearchPopupView, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if view.suggestions.is_empty() && view.has_more {
-        push_wrapped_styled_popup_text(
-            &mut lines,
+        lines.extend(wrapped_styled_popup_lines(
             "More results: [Down/PageDown] load more at the end",
             width,
             theme::current().style(theme::HighlightGroup::Hint),
-        );
+        ));
     }
     lines
 }
@@ -283,7 +300,7 @@ fn search_result_line(
     } else {
         Style::default()
     };
-    let mut spans = vec![selectable_popup_marker(selected)];
+    let mut spans = vec![selection_marker(selected)];
     match result {
         SearchResultItem::Message(item) => {
             spans.push(Span::styled(
@@ -297,7 +314,7 @@ fn search_result_line(
             spans.push(Span::styled(
                 format!(
                     "{}: ",
-                    format_message_sent_time(item.message_id, hour_format_24)
+                    format_message_local_time(item.message_id, hour_format_24)
                 ),
                 theme::current().style(theme::HighlightGroup::MessageTimestamp),
             ));
@@ -322,7 +339,7 @@ fn search_suggestion_line(
     } else {
         Style::default()
     };
-    let mut spans = vec![selectable_popup_marker(selected)];
+    let mut spans = vec![selection_marker(selected)];
     match suggestion {
         SearchSuggestionItem::Member(item) => {
             push_member_search_spans(&mut spans, item, selected, false);

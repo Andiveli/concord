@@ -11,9 +11,14 @@ mod action_menu;
 mod attachment_viewer;
 mod channel_switcher;
 mod confirmation;
-mod debug_log;
+mod debug_panel;
 mod downloads;
 mod folder_settings;
+mod gif_picker;
+pub(super) use gif_picker::{gif_picker_list_layout, render_gif_picker};
+pub(in crate::tui) use gif_picker::{
+    gif_picker_popup_area, gif_picker_preview_area, gif_picker_search_area,
+};
 mod forum_post;
 mod keymap;
 mod notification_inbox;
@@ -215,7 +220,6 @@ pub(super) use action_menu::{
     channel_action_menu_lines_for_test, message_action_menu_lines,
     message_action_menu_lines_with_keymap_options,
 };
-#[cfg(test)]
 pub(super) use attachment_viewer::centered_viewer_preview_area;
 pub(super) use attachment_viewer::render_attachment_viewer;
 #[cfg(test)]
@@ -225,20 +229,17 @@ pub(super) use channel_switcher::{
 };
 pub(super) use confirmation::{
     guild_leave_confirmation_popup_area_for_state, long_message_confirmation_popup_area_for_state,
-    message_confirmation_popup_area_for_state, quit_confirmation_popup_area,
-    render_guild_leave_confirmation, render_long_message_confirmation, render_message_confirmation,
+    message_confirmation_popup_area_for_state, notification_inbox_mark_all_confirmation_popup_area,
+    quit_confirmation_popup_area, render_guild_leave_confirmation,
+    render_long_message_confirmation, render_message_confirmation,
     render_notification_inbox_mark_all_confirmation, render_quit_confirmation,
     render_thread_delete_confirmation, thread_delete_confirmation_popup_area_for_state,
 };
 #[cfg(test)]
 pub(super) use confirmation::{
-    long_message_confirmation_lines_for_test, message_delete_confirmation_lines,
-    message_pin_confirmation_lines, message_remove_embeds_confirmation_lines,
-    quit_confirmation_lines,
+    long_message_confirmation_lines, message_confirmation_lines, quit_confirmation_popup_lines,
 };
-#[cfg(test)]
-pub(super) use debug_log::debug_log_popup_lines;
-pub(super) use debug_log::{debug_log_popup_area_for_state, render_debug_log_popup};
+pub(super) use debug_panel::{debug_panel_area, render_debug_panel, sync_debug_panel};
 #[cfg(test)]
 pub(super) use downloads::downloads_popup_lines;
 pub(super) use downloads::{
@@ -248,8 +249,8 @@ pub(super) use downloads::{
 pub(super) use folder_settings::folder_settings_input_line_for_test;
 pub(super) use folder_settings::{folder_settings_popup_area, render_folder_settings_popup};
 pub(super) use forum_post::{
-    forum_post_composer_metrics, forum_post_composer_popup_area, forum_post_tag_picker_list_layout,
-    render_forum_post_composer, render_forum_post_tag_picker,
+    forum_post_composer_field_at, forum_post_composer_metrics, forum_post_composer_popup_area,
+    forum_post_tag_picker_list_layout, render_forum_post_composer, render_forum_post_tag_picker,
 };
 #[cfg(test)]
 pub(super) use keymap::keymap_help_popup_lines;
@@ -257,7 +258,8 @@ pub(super) use keymap::{
     keymap_popup_area, keymap_popup_text_area, keymap_popup_total_lines, render_keymap_help_popup,
 };
 pub(super) use notification_inbox::{
-    notification_inbox_list_layout, notification_inbox_popup_area, render_notification_inbox_popup,
+    notification_inbox_list_layout, notification_inbox_popup_area, notification_inbox_tab_at,
+    render_notification_inbox_popup,
 };
 #[cfg(test)]
 pub(super) use options::options_popup_lines;
@@ -265,20 +267,17 @@ pub(super) use options::{options_popup_area, options_popup_list_layout, render_o
 #[cfg(test)]
 pub(super) use polls::poll_vote_picker_lines;
 pub(super) use polls::{poll_vote_picker_popup_area, render_poll_vote_picker};
+#[cfg(test)]
+pub(super) use profile::user_profile_popup_text;
 pub(super) use profile::{
-    render_user_profile_popup, user_profile_picker_list_layout, user_profile_popup_has_avatar,
-    user_profile_popup_metrics, user_profile_popup_text_geometry,
+    render_user_profile_popup, user_profile_control_at, user_profile_picker_list_layout,
+    user_profile_popup_has_avatar, user_profile_popup_metrics, user_profile_popup_text_geometry,
 };
 pub(in crate::tui) use profile::{user_profile_popup_area, user_profile_popup_avatar_viewport};
 #[cfg(test)]
-pub(super) use profile::{
-    user_profile_popup_lines, user_profile_popup_lines_with_activities, user_profile_popup_text,
-};
-#[cfg(test)]
 pub(super) use reactions::{
-    emoji_reaction_picker_lines, emoji_reaction_picker_lines_for_width,
-    emoji_reaction_picker_lines_with_own_reactions, filtered_emoji_reaction_picker_lines,
-    reaction_list_lines_with_ready_urls, reaction_users_popup_lines,
+    EmojiReactionPickerRenderOptions, emoji_reaction_picker_lines_with_custom_emoji_images,
+    reaction_list_lines, reaction_user_lines,
 };
 pub(super) use reactions::{
     emoji_reaction_picker_list_layout, emoji_reaction_picker_popup_area_for_state,
@@ -286,20 +285,19 @@ pub(super) use reactions::{
     render_reaction_users_popup,
 };
 pub(super) use search::{
-    render_search_popup, search_popup_area_for_state, search_popup_list_layout,
+    render_search_popup, search_popup_area_for_state, search_popup_field_at,
+    search_popup_list_layout,
 };
 pub(super) use stream_info::{render_stream_info, stream_info_area, stream_info_lines_for_area};
 #[cfg(test)]
 pub(super) use stream_info::{stream_info_lines, stream_info_lines_for_width};
 pub(super) use thread_edit::{
-    render_thread_edit, render_thread_edit_tag_picker, thread_edit_metrics, thread_edit_popup_area,
-    thread_edit_tag_picker_list_layout,
+    render_thread_edit, render_thread_edit_tag_picker, thread_edit_field_at, thread_edit_metrics,
+    thread_edit_popup_area, thread_edit_tag_picker_list_layout,
 };
 #[cfg(test)]
 pub(super) use toast::toast_line;
 pub(super) use toast::{render_toast, toast_area};
-#[cfg(test)]
-pub(super) use url_picker::message_url_picker_lines_for_width;
 pub(super) use url_picker::{message_url_picker_popup_area, render_message_url_picker};
 pub(super) use voice_participant_audio::{
     render_voice_participant_audio_popup, voice_participant_audio_list_layout,
@@ -353,6 +351,7 @@ pub(super) fn active_selectable_popup_layout(
         SelectablePopupTarget::SearchResults | SelectablePopupTarget::SearchSuggestions => {
             search_popup_list_layout(area, state, snapshot)
         }
+        SelectablePopupTarget::GifResults => gif_picker_list_layout(area, snapshot),
     })
 }
 
@@ -445,7 +444,7 @@ pub(super) fn background_media_occlusion_areas(
     areas.into_iter().filter(|area| !area.is_empty()).collect()
 }
 
-fn active_modal_popup_area(frame_area: Rect, state: &DashboardState) -> Option<Rect> {
+pub(super) fn active_modal_popup_area(frame_area: Rect, state: &DashboardState) -> Option<Rect> {
     let kind = state.active_modal_popup_kind()?;
     match kind {
         ActiveModalPopupKind::MessageActionMenu => {
@@ -481,6 +480,7 @@ fn active_modal_popup_area(frame_area: Rect, state: &DashboardState) -> Option<R
         ActiveModalPopupKind::ThreadDeleteConfirmation => {
             thread_delete_confirmation_popup_area_for_state(frame_area, state)
         }
+        ActiveModalPopupKind::GifPicker => Some(gif_picker_popup_area(frame_area)),
         ActiveModalPopupKind::Options => Some(options_popup_area(frame_area, state)),
         ActiveModalPopupKind::AttachmentViewer => Some(attachment_viewer_popup(
             frame_area,
@@ -497,9 +497,16 @@ fn active_modal_popup_area(frame_area: Rect, state: &DashboardState) -> Option<R
         ActiveModalPopupKind::ReactionUsers => {
             reaction_users_popup_area_for_state(frame_area, state)
         }
-        ActiveModalPopupKind::DebugLog => Some(debug_log_popup_area_for_state(frame_area, state)),
+        ActiveModalPopupKind::DebugLog => Some(debug_panel_area(frame_area)),
         ActiveModalPopupKind::KeymapHelp => Some(keymap_popup_area(frame_area)),
         ActiveModalPopupKind::ChannelSwitcher => Some(channel_switcher_popup_area(frame_area)),
+        ActiveModalPopupKind::NotificationInbox
+            if state.notification_inbox_is_confirming_mark_all() =>
+        {
+            Some(notification_inbox_mark_all_confirmation_popup_area(
+                frame_area,
+            ))
+        }
         ActiveModalPopupKind::NotificationInbox => Some(notification_inbox_popup_area(frame_area)),
         ActiveModalPopupKind::Search => search_popup_area_for_state(frame_area, state),
         ActiveModalPopupKind::ForumPostComposer => Some(forum_post_composer_popup_area(frame_area)),
@@ -791,19 +798,6 @@ fn wrapped_styled_popup_lines(text: &str, width: usize, style: Style) -> Vec<Lin
     lines
 }
 
-fn push_wrapped_styled_popup_text(
-    lines: &mut Vec<Line<'static>>,
-    text: &str,
-    width: usize,
-    style: Style,
-) {
-    lines.extend(wrapped_styled_popup_lines(text, width, style));
-}
-
-fn selectable_popup_marker(selected: bool) -> Span<'static> {
-    selection_marker(selected)
-}
-
 fn editable_field_marker(active: bool) -> &'static str {
     if active { "› " } else { "  " }
 }
@@ -945,12 +939,11 @@ fn popup_form_summary_line(
 }
 
 fn push_popup_form_inline_status(lines: &mut Vec<Line<'static>>, status: &str, width: usize) {
-    push_wrapped_styled_popup_text(
-        lines,
+    lines.extend(wrapped_styled_popup_lines(
         &format!("  {status}"),
         width,
         theme::current().style(theme::HighlightGroup::Error),
-    );
+    ));
 }
 
 fn selectable_popup_shortcut_span(shortcut: impl Into<String>) -> Span<'static> {

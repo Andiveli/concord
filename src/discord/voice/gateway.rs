@@ -6,6 +6,14 @@ use super::media::GatewayChildTasks;
 use super::*;
 
 const VOICE_UDP_RECEIVE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+const VOICE_REMOTE_SPEAKING_QUEUE_CAPACITY: usize = 256;
+
+pub(super) fn voice_gateway_opcode(value: &Value) -> Option<u8> {
+    value
+        .get("op")
+        .and_then(Value::as_u64)
+        .and_then(|opcode| u8::try_from(opcode).ok())
+}
 
 pub(super) async fn run_voice_gateway_session(
     session: VoiceGatewaySession,
@@ -53,10 +61,14 @@ pub(super) async fn connect_voice_gateway(
     let url = voice_gateway_url(&session.endpoint)?;
     logging::debug("voice", format!("connecting voice websocket: {url}"));
     let connect_started = Instant::now();
-    let (ws, response) = timeout(VOICE_WEBSOCKET_CONNECT_TIMEOUT, connect_async(&url))
-        .await
-        .map_err(|_| "voice websocket connect timed out after 10s".to_owned())?
-        .map_err(|error| format!("voice websocket connect failed: {error}"))?;
+    let connector = tls::websocket_connector()?;
+    let (ws, response) = timeout(
+        VOICE_WEBSOCKET_CONNECT_TIMEOUT,
+        connect_async_tls_with_config(&url, None, false, Some(connector)),
+    )
+    .await
+    .map_err(|_| "voice websocket connect timed out after 10s".to_owned())?
+    .map_err(|error| format!("voice websocket connect failed: {error}"))?;
     logging::debug(
         "voice",
         format!(
@@ -98,7 +110,8 @@ pub(super) async fn connect_voice_gateway(
     let (local_speaking_tx, mut local_speaking_rx) = mpsc::unbounded_channel();
     #[cfg_attr(not(feature = "voice-playback"), allow(unused_variables))]
     let (transmit_failure_tx, mut transmit_failure_rx) = mpsc::unbounded_channel::<String>();
-    let (remote_speaking_tx, mut remote_speaking_rx) = mpsc::unbounded_channel();
+    let (remote_speaking_tx, mut remote_speaking_rx) =
+        mpsc::channel(VOICE_REMOTE_SPEAKING_QUEUE_CAPACITY);
     #[cfg_attr(
         not(feature = "voice-playback"),
         allow(unused_mut, unused_variables, unused_assignments)
@@ -165,10 +178,12 @@ pub(super) async fn connect_voice_gateway(
                     }
                     None => {
                         child_tasks.set_voice_transmit_gate(VoiceCaptureGate {
+                            transmit_epoch: 0,
                             capture_enabled: false,
                             transmit_enabled: false,
                             use_voice_activity: true,
                             noise_suppression: false,
+                            microphone_buffer_ms: None,
                             microphone_sensitivity: MicrophoneSensitivityDb::default(),
                             microphone_volume: VoiceVolumePercent::default(),
                         });
@@ -321,7 +336,10 @@ pub(super) async fn connect_voice_gateway(
                 if let Some(sequence) = value.get("seq").and_then(Value::as_i64) {
                     *last_sequence.lock().await = Some(sequence);
                 }
-                let opcode = value.get("op").and_then(Value::as_u64).unwrap_or_default() as u8;
+                let Some(opcode) = voice_gateway_opcode(&value) else {
+                    logging::debug("voice", "ignored voice gateway payload with invalid opcode");
+                    continue;
+                };
                 match opcode {
                     VOICE_OP_HEARTBEAT => {
                         send_requested_voice_heartbeat(&writer, &last_sequence).await?;
@@ -727,10 +745,14 @@ async fn resume_voice_gateway(
     child_tasks.heartbeat.abort();
     heartbeat_ack.lock().await.reset();
 
-    let (ws, response) = timeout(VOICE_WEBSOCKET_CONNECT_TIMEOUT, connect_async(url))
-        .await
-        .map_err(|_| "voice resume websocket connect timed out after 10s".to_owned())?
-        .map_err(|error| format!("voice resume websocket connect failed: {error}"))?;
+    let connector = tls::websocket_connector()?;
+    let (ws, response) = timeout(
+        VOICE_WEBSOCKET_CONNECT_TIMEOUT,
+        connect_async_tls_with_config(url, None, false, Some(connector)),
+    )
+    .await
+    .map_err(|_| "voice resume websocket connect timed out after 10s".to_owned())?
+    .map_err(|error| format!("voice resume websocket connect failed: {error}"))?;
     logging::debug(
         "voice",
         format!(
@@ -790,7 +812,7 @@ struct VoiceSessionAudio<'a> {
     writer: &'a VoiceWriter,
     audio_handle: &'a tokio::runtime::Handle,
     dave_state: &'a Arc<Mutex<VoiceDaveState>>,
-    remote_speaking_tx: &'a mpsc::UnboundedSender<Id<UserMarker>>,
+    remote_speaking_tx: &'a mpsc::Sender<Id<UserMarker>>,
     current_playback_gate: VoicePlaybackGate,
     participant_playback_rx:
         watch::Receiver<HashMap<Id<UserMarker>, VoiceParticipantPlaybackSettings>>,
@@ -1035,7 +1057,7 @@ pub(super) async fn run_voice_udp_receive(
     description: VoiceSessionDescription,
     dave_state: Arc<Mutex<VoiceDaveState>>,
     playback_tx: Option<mpsc::Sender<VoicePlaybackFrame>>,
-    remote_speaking_tx: mpsc::UnboundedSender<Id<UserMarker>>,
+    remote_speaking_tx: mpsc::Sender<Id<UserMarker>>,
 ) {
     let mode = description.mode.clone();
     let decryptor = match VoiceRtpDecryptor::new(&description.mode, &description.secret_key) {
@@ -1194,7 +1216,7 @@ pub(super) async fn run_voice_udp_receive(
                                 if let Some(user_id) = remote_user_id
                                     && voice_media_payload_counts_as_remote_activity(&media)
                                 {
-                                    let _ = remote_speaking_tx.send(user_id);
+                                    queue_remote_speaking_activity(&remote_speaking_tx, user_id);
                                 }
                                 if decrypted_packets == 1 || decrypted_packets.is_multiple_of(500) {
                                     logging::debug(
@@ -1249,6 +1271,13 @@ pub(super) async fn run_voice_udp_receive(
             }
         }
     }
+}
+
+pub(super) fn queue_remote_speaking_activity(
+    remote_speaking_tx: &mpsc::Sender<Id<UserMarker>>,
+    user_id: Id<UserMarker>,
+) {
+    let _ = remote_speaking_tx.try_send(user_id);
 }
 
 #[allow(dead_code)]

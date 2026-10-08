@@ -42,6 +42,8 @@ pub struct ChannelState {
     pub kind: String,
     pub message_count: Option<u64>,
     pub member_count: Option<u64>,
+    /// Voice channel participant limit. Discord uses zero for unlimited.
+    pub user_limit: Option<u64>,
     pub total_message_sent: Option<u64>,
     pub thread_metadata: Option<crate::discord::ThreadMetadataInfo>,
     pub flags: Option<u64>,
@@ -252,8 +254,6 @@ impl ChannelRecipientState {
 }
 
 /// Counts of viewable vs. permission-hidden channels for a single scope.
-/// Surfaced in the debug-log popup so the user can confirm whether a
-/// channel they expected to see is actually being filtered out.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ChannelVisibilityStats {
     pub visible: usize,
@@ -300,8 +300,7 @@ impl DiscordState {
 
     /// Visible/hidden channel counts for a guild scope. DM scope reports
     /// `(visible, 0)` since DMs are never hidden. Threads are excluded from
-    /// both sides. The debug-panel readout focuses on top-level channels
-    /// because those are what the user navigates by.
+    /// both sides so the count describes top-level channel access.
     pub fn channel_visibility_stats(
         &self,
         guild_id: Option<Id<GuildMarker>>,
@@ -473,6 +472,9 @@ impl DiscordState {
             kind: channel.kind.clone(),
             message_count: channel.message_count,
             member_count: channel.member_count,
+            user_limit: channel
+                .user_limit
+                .or_else(|| existing.and_then(|existing| existing.user_limit)),
             total_message_sent: channel.total_message_sent,
             thread_metadata,
             flags,

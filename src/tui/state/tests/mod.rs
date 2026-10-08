@@ -14,17 +14,18 @@ use unicode_width::UnicodeWidthStr;
 
 use super::model::{ChannelBranch, GuildBranch};
 use super::{
-    ActiveGuildScope, AttachmentViewerItem, ChannelActionKind, ChannelPaneEntry, ComposerLock,
-    DashboardState, FocusPane, GuildActionKind, GuildPaneEntry, MessageActionItem,
-    MessageActionKind, SearchResultItem,
+    ActiveGuildScope, ActiveModalPopupKind, AttachmentViewerItem, ChannelActionKind,
+    ChannelPaneEntry, ChannelSwitcherItem, ChannelSwitcherMode, ComposerLock, DashboardState,
+    FocusPane, GuildActionKind, GuildPaneEntry, MessageActionItem, MessageActionKind,
+    SearchResultItem,
 };
 use crate::discord::test_builders::{MessageAckFixture, message_ack_event};
 use crate::discord::{
     ActivityInfo, ActivityKind, AppCommand, AppEvent, AttachmentInfo, ChannelInfo,
-    ChannelNotificationOverrideInfo, ChannelRecipientInfo, ChannelUnreadState,
-    ChannelVisibilityStats, CustomEmojiInfo, DiscordState, DownloadAttachmentSource,
-    EmbedFieldInfo, EmbedInfo, ForumTagInfo, GuildFolder, GuildMemberListItem,
-    GuildMemberListOperation, GuildMemberListUpdateInfo, GuildNotificationSettingsInfo,
+    ChannelNotificationOverrideInfo, ChannelRecipientInfo, ChannelUnreadState, CustomEmojiInfo,
+    DiscordState, DownloadAttachmentSource, EmbedFieldInfo, EmbedInfo, ForumTagInfo, GuildFolder,
+    GuildMemberListItem, GuildMemberListOperation, GuildMemberListUpdateInfo,
+    GuildNotificationSettingsInfo, MESSAGE_FLAG_IS_COMPONENTS_V2, MessageComponentInfo,
     MessageInfo, MessageKind, MessageReferenceInfo, MessageSearchPage, MessageSnapshotInfo,
     MessageState, MessageUpdateDispatchInfo, MessageUpdateEventFields, NotificationLevel,
     PermissionOverwriteInfo, PermissionOverwriteKind, PremiumTier, PresenceEventFields,

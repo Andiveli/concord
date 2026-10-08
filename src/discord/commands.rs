@@ -15,7 +15,7 @@ use super::application_commands::{
 };
 use super::emoji::custom_emoji_image_url;
 use super::message::MessageInfo;
-use super::{ActivityInfo, PresenceStatus, VoiceScope};
+use super::{ActivityInfo, PresenceStatus, RichPresenceSelection, VoiceScope};
 
 pub const MAX_UPLOAD_ATTACHMENT_COUNT: usize = 10;
 pub const MAX_PROFILE_AVATAR_BYTES: u64 = 10 * 1024 * 1024;
@@ -422,6 +422,12 @@ pub struct ReplyReference {
     pub mention_author: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TranslationTarget {
+    Message(Id<MessageMarker>),
+    Composer,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppCommand {
     SignOut,
@@ -456,6 +462,7 @@ pub enum AppCommand {
         before: Option<String>,
     },
     SearchMessages {
+        request_id: u64,
         query: MessageSearchQuery,
     },
     LoadGuildMembersByIds {
@@ -504,6 +511,7 @@ pub enum AppCommand {
         output_source: Option<String>,
         allow_microphone_transmit: bool,
         noise_suppression: bool,
+        microphone_buffer_ms: Option<crate::discord::MicrophoneBufferMs>,
         microphone_sensitivity: crate::discord::MicrophoneSensitivityDb,
         microphone_volume: crate::discord::VoiceVolumePercent,
         voice_output_volume: crate::discord::VoiceVolumePercent,
@@ -523,6 +531,7 @@ pub enum AppCommand {
         channel_id: Id<ChannelMarker>,
         allow_microphone_transmit: bool,
         noise_suppression: bool,
+        microphone_buffer_ms: Option<crate::discord::MicrophoneBufferMs>,
         microphone_sensitivity: crate::discord::MicrophoneSensitivityDb,
         microphone_volume: crate::discord::VoiceVolumePercent,
         voice_output_volume: crate::discord::VoiceVolumePercent,
@@ -610,6 +619,15 @@ pub enum AppCommand {
     OpenUrl {
         url: String,
     },
+    Translate {
+        request_id: u64,
+        target: TranslationTarget,
+        target_language: String,
+        content: String,
+    },
+    CancelComposerTranslation {
+        request_id: u64,
+    },
     PlayMedia {
         target: MediaPlaybackTarget,
         request_id: Option<MediaPlaybackRequestId>,
@@ -667,9 +685,10 @@ pub enum AppCommand {
     UpdateCurrentUserActivity {
         status: PresenceStatus,
         activities: Vec<ActivityInfo>,
-        /// RPC `client_id` whose live activity this is, so the RPC server keeps
-        /// re-broadcasting it. `None` for a manual activity, which RPC must not override.
-        track_client_id: Option<String>,
+        /// How RPC activities are relayed afterwards: automatic (most recent
+        /// app wins, native-like), a pinned app, or manual (RPC never
+        /// overrides).
+        rich_presence: RichPresenceSelection,
     },
     AckChannel {
         channel_id: Id<ChannelMarker>,

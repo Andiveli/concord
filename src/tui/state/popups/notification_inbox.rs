@@ -405,6 +405,18 @@ impl DashboardState {
         self.ensure_notification_inbox_requests();
     }
 
+    pub(in crate::tui) fn select_notification_inbox_tab(
+        &mut self,
+        tab: NotificationInboxTab,
+    ) -> bool {
+        let Some(inbox) = self.popups.notification_inbox_mut() else {
+            return false;
+        };
+        inbox.tab = tab;
+        self.ensure_notification_inbox_requests();
+        true
+    }
+
     pub fn activate_selected_notification_inbox_item(&mut self) -> Option<AppCommand> {
         let (tab, index) = {
             let inbox = self.popups.notification_inbox()?;
@@ -999,6 +1011,7 @@ impl DashboardState {
                     || !message.attachments.is_empty()
                     || !message.stickers.is_empty()
                     || !message.embeds.is_empty()
+                    || !message.components.is_empty()
             })
             .collect::<Vec<_>>();
         let start = eligible
@@ -1016,7 +1029,7 @@ impl DashboardState {
                 content: self.inbox_preview_content(
                     message.guild_id,
                     &message.mentions,
-                    message.content.as_deref(),
+                    message.summary_text(),
                     !message.attachments.is_empty(),
                     &message.stickers,
                     !message.embeds.is_empty(),
@@ -1073,7 +1086,7 @@ impl DashboardState {
         let content = self.inbox_preview_content(
             message.guild_id,
             &message.mentions,
-            message.content.as_deref(),
+            message.summary_text(),
             !message.attachments.is_empty(),
             &message.stickers,
             !message.embeds.is_empty(),

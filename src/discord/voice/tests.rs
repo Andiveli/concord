@@ -131,10 +131,12 @@ fn voice_runtime_capture_gate_requires_allowed_active_unmuted_voice() {
     assert_eq!(
         state.capture_gate(),
         Some(VoiceCaptureGate {
+            transmit_epoch: 0,
             capture_enabled: true,
             transmit_enabled: true,
             use_voice_activity: true,
             noise_suppression: true,
+            microphone_buffer_ms: None,
             microphone_sensitivity: MicrophoneSensitivityDb::default(),
             microphone_volume: VoiceVolumePercent::new(40),
         })
@@ -152,10 +154,12 @@ fn voice_runtime_capture_gate_requires_allowed_active_unmuted_voice() {
     assert_eq!(
         state.capture_gate(),
         Some(VoiceCaptureGate {
+            transmit_epoch: 0,
             capture_enabled: false,
             transmit_enabled: false,
             use_voice_activity: true,
             noise_suppression: true,
+            microphone_buffer_ms: None,
             microphone_sensitivity: MicrophoneSensitivityDb::default(),
             microphone_volume: VoiceVolumePercent::new(40),
         })
@@ -173,10 +177,12 @@ fn voice_runtime_capture_gate_requires_allowed_active_unmuted_voice() {
     assert_eq!(
         state.capture_gate(),
         Some(VoiceCaptureGate {
+            transmit_epoch: 0,
             capture_enabled: false,
             transmit_enabled: false,
             use_voice_activity: true,
             noise_suppression: true,
+            microphone_buffer_ms: None,
             microphone_sensitivity: MicrophoneSensitivityDb::default(),
             microphone_volume: VoiceVolumePercent::new(40),
         })
@@ -196,10 +202,12 @@ fn voice_runtime_capture_gate_requires_allowed_active_unmuted_voice() {
     assert_eq!(
         state.capture_gate(),
         Some(VoiceCaptureGate {
+            transmit_epoch: 0,
             capture_enabled: false,
             transmit_enabled: false,
             use_voice_activity: true,
             noise_suppression: true,
+            microphone_buffer_ms: None,
             microphone_sensitivity: MicrophoneSensitivityDb::default(),
             microphone_volume: VoiceVolumePercent::new(40),
         })
@@ -242,10 +250,12 @@ fn voice_runtime_push_to_talk_transmits_only_while_pressed() {
     assert_eq!(
         state.capture_gate(),
         Some(VoiceCaptureGate {
+            transmit_epoch: 0,
             capture_enabled: true,
             transmit_enabled: false,
             use_voice_activity: false,
             noise_suppression: false,
+            microphone_buffer_ms: None,
             microphone_sensitivity: MicrophoneSensitivityDb::default(),
             microphone_volume: VoiceVolumePercent::default(),
         })
@@ -255,10 +265,12 @@ fn voice_runtime_push_to_talk_transmits_only_while_pressed() {
     assert_eq!(
         state.capture_gate(),
         Some(VoiceCaptureGate {
+            transmit_epoch: 0,
             capture_enabled: true,
             transmit_enabled: true,
             use_voice_activity: false,
             noise_suppression: false,
+            microphone_buffer_ms: None,
             microphone_sensitivity: MicrophoneSensitivityDb::default(),
             microphone_volume: VoiceVolumePercent::default(),
         })
@@ -433,7 +445,7 @@ fn voice_close_codes_follow_reconnect_policy() {
 }
 
 #[test]
-fn voice_gateway_session_debug_redacts_secrets() {
+fn voice_debug_output_redacts_gateway_and_state_secrets() {
     let session = VoiceGatewaySession {
         connection_id: 0,
         scope: VoiceScope::Guild(Id::new(1)),
@@ -449,12 +461,8 @@ fn voice_gateway_session_debug_redacts_secrets() {
     assert!(debug.contains("<redacted>"));
     assert!(!debug.contains("secret-session"));
     assert!(!debug.contains("secret-token"));
-}
 
-#[test]
-fn voice_state_debug_redacts_session_id() {
     let state = voice_state(10, Some(Id::new(10)));
-
     let debug = format!("{state:?}");
 
     assert!(debug.contains("<redacted>"));
@@ -583,10 +591,12 @@ fn local_speaking_follows_microphone_activity_and_emits_only_edges() {
     let quiet = vec![100i16; DISCORD_OPUS_20MS_STEREO_SAMPLES];
     let normal = vec![1500i16; DISCORD_OPUS_20MS_STEREO_SAMPLES];
     let voice_activity_gate = VoiceCaptureGate {
+        transmit_epoch: 0,
         capture_enabled: true,
         transmit_enabled: true,
         use_voice_activity: true,
         noise_suppression: false,
+        microphone_buffer_ms: None,
         microphone_sensitivity: MicrophoneSensitivityDb::default(),
         microphone_volume: VoiceVolumePercent::default(),
     };
@@ -1217,6 +1227,32 @@ fn remote_speaking_activity_ignores_silence_and_unplayable_media() {
 }
 
 #[test]
+fn voice_gateway_opcode_rejects_values_that_do_not_fit_u8() {
+    assert_eq!(gateway::voice_gateway_opcode(&json!({ "op": 2 })), Some(2));
+    assert_eq!(gateway::voice_gateway_opcode(&json!({ "op": 258 })), None);
+    assert_eq!(gateway::voice_gateway_opcode(&json!({ "op": "2" })), None);
+}
+
+#[test]
+fn remote_speaking_activity_queue_is_bounded_and_recovers_capacity() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let first = Id::new(10);
+    let second = Id::new(20);
+
+    gateway::queue_remote_speaking_activity(&tx, first);
+    gateway::queue_remote_speaking_activity(&tx, second);
+
+    assert_eq!(rx.try_recv(), Ok(first));
+    assert!(matches!(
+        rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+
+    gateway::queue_remote_speaking_activity(&tx, second);
+    assert_eq!(rx.try_recv(), Ok(second));
+}
+
+#[test]
 fn microphone_sensitivity_filters_quiet_pcm_frames() {
     let quiet = vec![100i16; DISCORD_OPUS_20MS_STEREO_SAMPLES];
     let normal = vec![1500i16; DISCORD_OPUS_20MS_STEREO_SAMPLES];
@@ -1303,10 +1339,12 @@ fn voice_microphone_conditioning_combines_gain_before_soft_limiting() {
     condition_voice_microphone_frame(
         &mut frame,
         VoiceCaptureGate {
+            transmit_epoch: 0,
             capture_enabled: true,
             transmit_enabled: true,
             use_voice_activity: true,
             noise_suppression: false,
+            microphone_buffer_ms: None,
             microphone_sensitivity: MicrophoneSensitivityDb::default(),
             microphone_volume: VoiceVolumePercent::new(200),
         },
@@ -1573,40 +1611,39 @@ fn voice_microphone_overload_promotes_sparse_clipped_transients_to_handling_nois
 }
 
 #[test]
-fn voice_microphone_overload_gain_keeps_sub_extreme_same_polarity_clip_audible() {
-    let mut clipped = vec![0i16; DISCORD_OPUS_20MS_STEREO_SAMPLES];
-    for sample in clipped
-        .iter_mut()
-        .take(VOICE_MIC_OVERLOAD_EXTREME_CLIPPED_SAMPLES - 1)
-    {
-        *sample = i16::MAX;
+fn voice_microphone_same_polarity_clip_threshold_selects_attenuation_or_blank() {
+    for (name, clipped_samples, expected_kind, expected_gain) in [
+        (
+            "sub-extreme",
+            VOICE_MIC_OVERLOAD_EXTREME_CLIPPED_SAMPLES - 1,
+            VoiceMicrophoneOverloadKind::Transient,
+            VOICE_MIC_OVERLOAD_TRANSIENT_GAIN,
+        ),
+        (
+            "extreme",
+            VOICE_MIC_OVERLOAD_EXTREME_CLIPPED_SAMPLES,
+            VoiceMicrophoneOverloadKind::HandlingNoise,
+            VOICE_MIC_HANDLING_NOISE_GAIN,
+        ),
+    ] {
+        let mut clipped = vec![0i16; DISCORD_OPUS_20MS_STEREO_SAMPLES];
+        clipped[..clipped_samples].fill(i16::MAX);
+
+        let decision = voice_microphone_overload_decision(&clipped)
+            .unwrap_or_else(|| panic!("{name} clipped frame should be classified"));
+        assert_eq!(decision.kind, expected_kind, "{name}");
+        assert_eq!(decision.gain, expected_gain, "{name}");
+        assert_eq!(
+            voice_microphone_overload_gain(&clipped),
+            Some(expected_gain),
+            "{name}"
+        );
+        assert_eq!(
+            voice_microphone_clipped_sample_count(&clipped),
+            clipped_samples,
+            "{name}"
+        );
     }
-
-    assert_eq!(
-        voice_microphone_overload_gain(&clipped),
-        Some(VOICE_MIC_OVERLOAD_TRANSIENT_GAIN)
-    );
-}
-
-#[test]
-fn voice_microphone_overload_gain_blanks_extreme_same_polarity_clip() {
-    let mut clipped = vec![0i16; DISCORD_OPUS_20MS_STEREO_SAMPLES];
-    for sample in clipped
-        .iter_mut()
-        .take(VOICE_MIC_OVERLOAD_EXTREME_CLIPPED_SAMPLES)
-    {
-        *sample = i16::MAX;
-    }
-
-    let decision = voice_microphone_overload_decision(&clipped)
-        .expect("extreme clipped frame should be blanked");
-
-    assert_eq!(decision.kind, VoiceMicrophoneOverloadKind::HandlingNoise);
-    assert_eq!(decision.gain, VOICE_MIC_HANDLING_NOISE_GAIN);
-    assert_eq!(
-        voice_microphone_clipped_sample_count(&clipped),
-        VOICE_MIC_OVERLOAD_EXTREME_CLIPPED_SAMPLES
-    );
 }
 
 #[test]
@@ -1985,54 +2022,45 @@ fn outbound_rtp_encrypts_aead_rtpsize_modes_for_decrypt_round_trip() {
 }
 
 #[test]
-fn opus_encoder_encodes_decodable_20ms_stereo_frame() {
-    let mut encoder = VoiceOpusEncode::new().expect("Opus encoder should build");
+fn voice_opus_encoders_produce_decodable_20ms_stereo_frames() {
     let pcm = vec![0i16; DISCORD_OPUS_20MS_STEREO_SAMPLES];
+    let encoders = [
+        (
+            "voice",
+            VoiceOpusEncode::new().expect("voice Opus encoder should build"),
+        ),
+        (
+            "system audio",
+            VoiceOpusEncode::new_system_audio().expect("system audio Opus encoder should build"),
+        ),
+    ];
 
-    let opus = encoder
-        .encode_20ms_i16(&pcm)
-        .expect("20 ms stereo frame should encode");
+    for (name, mut encoder) in encoders {
+        let opus = encoder
+            .encode_20ms_i16(&pcm)
+            .unwrap_or_else(|error| panic!("{name} 20 ms stereo frame should encode: {error}"));
+        assert!(!opus.is_empty(), "{name}");
 
-    assert!(!opus.is_empty());
-
-    let mut decoder = OpusDecoder::new(Channels::Stereo, OpusSampleRate::Hz48000)
-        .expect("Opus decoder should build");
-    let mut decoded = vec![0.0f32; DISCORD_OPUS_20MS_STEREO_SAMPLES];
-    let samples_per_channel = decoder
-        .decode_float_to_slice(&opus, &mut decoded, false)
-        .expect("encoded Opus should decode");
-
-    assert_eq!(samples_per_channel, DISCORD_OPUS_FRAME_SAMPLES_PER_CHANNEL);
-    assert_eq!(
-        encoder
-            .encode_20ms_i16(&pcm[..pcm.len() - 1])
-            .expect_err("short frame should fail"),
-        format!(
-            "voice Opus encoder expected {} interleaved stereo samples, got {}",
-            DISCORD_OPUS_20MS_STEREO_SAMPLES,
-            DISCORD_OPUS_20MS_STEREO_SAMPLES - 1
-        )
-    );
-}
-
-#[test]
-fn system_audio_opus_encoder_encodes_decodable_20ms_stereo_frame() {
-    let mut encoder =
-        VoiceOpusEncode::new_system_audio().expect("system audio Opus encoder should build");
-    let pcm = vec![0i16; DISCORD_OPUS_20MS_STEREO_SAMPLES];
-
-    let opus = encoder
-        .encode_20ms_i16(&pcm)
-        .expect("system audio frame should encode");
-
-    let mut decoder = OpusDecoder::new(Channels::Stereo, OpusSampleRate::Hz48000)
-        .expect("Opus decoder should build");
-    let mut decoded = vec![0.0f32; DISCORD_OPUS_20MS_STEREO_SAMPLES];
-    let samples_per_channel = decoder
-        .decode_float_to_slice(&opus, &mut decoded, false)
-        .expect("system audio Opus should decode");
-
-    assert_eq!(samples_per_channel, DISCORD_OPUS_FRAME_SAMPLES_PER_CHANNEL);
+        let mut decoder = OpusDecoder::new(Channels::Stereo, OpusSampleRate::Hz48000)
+            .expect("Opus decoder should build");
+        let mut decoded = vec![0.0f32; DISCORD_OPUS_20MS_STEREO_SAMPLES];
+        let samples_per_channel = decoder
+            .decode_float_to_slice(&opus, &mut decoded, false)
+            .unwrap_or_else(|error| panic!("{name} Opus frame should decode: {error:?}"));
+        assert_eq!(
+            samples_per_channel, DISCORD_OPUS_FRAME_SAMPLES_PER_CHANNEL,
+            "{name}"
+        );
+        assert_eq!(
+            encoder.encode_20ms_i16(&pcm[..pcm.len() - 1]).unwrap_err(),
+            format!(
+                "voice Opus encoder expected {} interleaved stereo samples, got {}",
+                DISCORD_OPUS_20MS_STEREO_SAMPLES,
+                DISCORD_OPUS_20MS_STEREO_SAMPLES - 1
+            ),
+            "{name}"
+        );
+    }
 }
 
 #[cfg(feature = "voice-playback")]
@@ -2049,6 +2077,9 @@ fn microphone_input_conversion_produces_20ms_stereo_frames() {
 
     let unsigned = voice_input_u8_to_stereo_i16(&[0, 255], 2);
     assert_eq!(unsigned, vec![i16::MIN, 32512]);
+
+    let unsigned = voice_input_u16_to_stereo_i16(&[0, u16::MAX], 2);
+    assert_eq!(unsigned, vec![i16::MIN, i16::MAX]);
 }
 
 #[cfg(feature = "voice-playback")]
@@ -2064,7 +2095,7 @@ fn microphone_pcm_frames_resample_44100_to_48000() {
         samples.push(-(index as i16));
     }
 
-    frames.push_stereo_samples(&samples);
+    frames.push_stereo_samples(&samples, Instant::now());
     let frame = rx
         .try_recv()
         .expect("resampled 20 ms frame should be queued");
@@ -2081,87 +2112,78 @@ fn microphone_pcm_frames_resample_44100_to_48000() {
 
 #[cfg(feature = "voice-playback")]
 #[test]
-fn microphone_pcm_frames_count_full_queue_drops() {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-    let stats = Arc::new(VoiceMicrophoneCaptureStats::default());
-    let mut frames =
-        VoiceMicrophonePcmFrames::new(tx, Arc::clone(&stats), DISCORD_VOICE_SAMPLE_RATE);
-    let samples = vec![1i16; DISCORD_OPUS_20MS_STEREO_SAMPLES * 2];
+fn microphone_preserves_delayed_batches_during_paced_transmission() {
+    for (capture_delay_ms, poll_delay_ms) in [(100, 0), (150, 10), (400, 19)] {
+        let now = Instant::now();
+        let captured_at = now - Duration::from_millis(capture_delay_ms);
+        let (tx, mut rx) = mpsc::channel(VOICE_MIC_PCM_FRAME_QUEUE);
+        let stats = Arc::new(VoiceMicrophoneCaptureStats::default());
+        let mut frames = VoiceMicrophonePcmFrames::new(tx, Arc::clone(&stats), 48_000);
+        let samples = (0..5)
+            .flat_map(|value| vec![value; DISCORD_OPUS_20MS_STEREO_SAMPLES])
+            .collect::<Vec<_>>();
+        frames.push_stereo_samples(&samples, captured_at);
 
-    frames.push_stereo_samples(&samples);
-
-    assert_eq!(
-        rx.try_recv()
-            .expect("first frame should queue")
-            .samples
-            .len(),
-        DISCORD_OPUS_20MS_STEREO_SAMPLES
-    );
-    assert_eq!(stats.queued_frames.load(Ordering::Relaxed), 1);
-    assert_eq!(stats.dropped_frames.load(Ordering::Relaxed), 1);
+        for index in 0..5 {
+            let frame = rx.try_recv().expect("batch frame should remain queued");
+            let tick = now + Duration::from_millis(poll_delay_ms + index * 20);
+            let (selected, dropped) = select_fresh_voice_microphone_frame(frame, &mut rx, tick);
+            let selected = selected.expect("ordinary capture delay must preserve speech");
+            assert_eq!(dropped, 0);
+            assert_eq!(selected.samples[0], index as i16);
+            assert_eq!(
+                selected.captured_at,
+                captured_at + Duration::from_millis(index * 20)
+            );
+        }
+        assert_eq!(stats.dropped_frames.load(Ordering::Relaxed), 0);
+        assert!(rx.try_recv().is_err());
+    }
 }
 
 #[cfg(feature = "voice-playback")]
 #[test]
-fn microphone_freshness_policy_bounds_queue_depth_and_frame_age() {
-    let now = Instant::now();
+fn microphone_capture_requires_enabled_transmit_destination() {
+    for (capture_enabled, has_destination) in [(false, false), (true, false), (false, true)] {
+        let (pcm_tx, _pcm_rx) = mpsc::channel(VOICE_MIC_PCM_FRAME_QUEUE);
+        let mut child_tasks = VoiceChildTasks::default();
+        child_tasks.microphone_pcm_tx = has_destination.then_some(pcm_tx);
+        let capture_gate = VoiceCaptureGate {
+            transmit_epoch: 0,
+            capture_enabled,
+            transmit_enabled: capture_enabled,
+            use_voice_activity: true,
+            noise_suppression: false,
+            microphone_buffer_ms: Some(MicrophoneBufferMs::new(40)),
+            microphone_sensitivity: MicrophoneSensitivityDb::default(),
+            microphone_volume: VoiceVolumePercent::default(),
+        };
 
-    // A full stored queue catches up to the newest three live frames instead
-    // of preserving hundreds of milliseconds of old speech.
-    let (tx, mut rx) = tokio::sync::mpsc::channel(VOICE_MIC_PCM_FRAME_QUEUE);
-    let initial = VoiceMicrophoneFrame {
-        samples: vec![0],
-        captured_at: now - Duration::from_millis(320),
-    };
-    for index in 1u8..=15 {
-        tx.try_send(VoiceMicrophoneFrame {
-            samples: vec![i16::from(index)],
-            captured_at: now - Duration::from_millis(u64::from(15 - index) * 20),
-        })
-        .expect("backlog frame should queue");
+        child_tasks.set_voice_transmit_gate(capture_gate);
+        assert!(child_tasks.microphone_capture.is_none());
+        assert!(child_tasks.microphone_buffer_ms.is_none());
+
+        // Device selection is saved without opening hardware until both capture
+        // is enabled and a destination exists.
+        let sources = VoiceAudioSources {
+            input: Some("selected microphone".to_owned()),
+            output: None,
+        };
+        let outcome = child_tasks.set_voice_audio_sources(sources.clone(), capture_gate);
+        assert_eq!(outcome.active_sources, sources);
+        assert_eq!(outcome.error, None);
+        assert!(child_tasks.microphone_capture.is_none());
+        assert_eq!(child_tasks.microphone_pcm_tx.is_some(), has_destination);
     }
-
-    let (selected, dropped) = select_fresh_voice_microphone_frame(initial, &mut rx, now);
-    let selected = selected.expect("a fresh frame should remain");
-
-    assert_eq!(selected.samples, vec![13]);
-    assert_eq!(dropped, 13);
-    assert_eq!(rx.len().saturating_add(1), VOICE_MIC_MAX_LIVE_FRAMES);
-    assert!(now.saturating_duration_since(selected.captured_at) <= VOICE_MIC_MAX_FRAME_AGE);
-
-    // A frame exactly on the age boundary remains live when it is the only
-    // available audio.
-    let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
-    let boundary = VoiceMicrophoneFrame {
-        samples: vec![50],
-        captured_at: now - VOICE_MIC_MAX_FRAME_AGE,
-    };
-    let (selected, dropped) = select_fresh_voice_microphone_frame(boundary, &mut rx, now);
-
-    assert_eq!(
-        selected.expect("boundary frame should remain live").samples,
-        vec![50]
-    );
-    assert_eq!(dropped, 0);
-
-    // Once the age budget is exceeded, transmitting silence or waiting for a
-    // new live frame is better than sending stale speech.
-    let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
-    let stale = VoiceMicrophoneFrame {
-        samples: vec![99],
-        captured_at: now - VOICE_MIC_MAX_FRAME_AGE - Duration::from_millis(1),
-    };
-    let (selected, dropped) = select_fresh_voice_microphone_frame(stale, &mut rx, now);
-
-    assert!(selected.is_none());
-    assert_eq!(dropped, 1);
 }
 
 #[cfg(feature = "voice-playback")]
 #[tokio::test]
 async fn voice_child_tasks_waits_for_udp_transmit_shutdown() {
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let (pcm_tx, mut pcm_rx) = mpsc::channel(VOICE_MIC_PCM_FRAME_QUEUE);
     let mut child_tasks = VoiceChildTasks::default();
+    child_tasks.microphone_pcm_tx = Some(pcm_tx);
     child_tasks.udp_transmit = Some(tokio::spawn(async move {
         sleep(Duration::from_millis(10)).await;
         let _ = done_tx.send(());
@@ -2172,6 +2194,11 @@ async fn voice_child_tasks_waits_for_udp_transmit_shutdown() {
     done_rx
         .await
         .expect("shutdown should await UDP transmit completion");
+    assert!(child_tasks.microphone_pcm_tx.is_none());
+    assert!(matches!(
+        pcm_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Disconnected)
+    ));
 }
 
 #[cfg(feature = "voice-playback")]
@@ -2297,11 +2324,13 @@ fn microphone_pcm_drain_clears_backlog_before_reenable() {
     let now = Instant::now();
 
     tx.try_send(VoiceMicrophoneFrame {
+        generation: Arc::new(AtomicBool::new(true)),
         samples: vec![10],
         captured_at: now,
     })
     .expect("first frame should queue");
     tx.try_send(VoiceMicrophoneFrame {
+        generation: Arc::new(AtomicBool::new(true)),
         samples: vec![20],
         captured_at: now,
     })
@@ -2319,9 +2348,23 @@ fn microphone_pcm_drain_clears_backlog_before_reenable() {
 #[test]
 fn microphone_capture_stats_track_callback_size_and_clipping() {
     let stats = VoiceMicrophoneCaptureStats::default();
+    let first_captured_at = stats.started_at + Duration::from_millis(10);
+    let second_captured_at = first_captured_at + Duration::from_millis(10);
 
-    record_voice_input_chunk(960, 2, &stats);
-    record_voice_input_chunk(480, 2, &stats);
+    record_voice_input_chunk(
+        960,
+        2,
+        first_captured_at,
+        first_captured_at + Duration::from_millis(10),
+        &stats,
+    );
+    record_voice_input_chunk(
+        480,
+        2,
+        second_captured_at,
+        second_captured_at + Duration::from_millis(5),
+        &stats,
+    );
     record_voice_input_pcm_stats(&[0, i16::MAX, i16::MIN + 1, 120], &stats);
 
     assert_eq!(stats.chunks.load(Ordering::Relaxed), 2);
@@ -2348,15 +2391,59 @@ fn voice_input_config_prefers_mono_then_sample_format() {
 
 #[cfg(feature = "voice-playback")]
 #[test]
-fn voice_input_buffer_size_requests_small_supported_fixed_buffer() {
-    let supported = cpal::SupportedBufferSize::Range { min: 128, max: 960 };
+fn automatic_microphone_buffer_uses_platform_period_and_supported_range() {
+    let callback_period_frames =
+        DISCORD_VOICE_SAMPLE_RATE / VOICE_MIC_AUTOMATIC_CALLBACKS_PER_SECOND;
+
     assert_eq!(
-        voice_input_buffer_size(&supported),
-        cpal::BufferSize::Fixed(VOICE_MIC_PREFERRED_BUFFER_FRAMES)
+        automatic_voice_input_buffer_size(
+            &cpal::SupportedBufferSize::Range {
+                min: 128,
+                max: 8_192,
+            },
+            DISCORD_VOICE_SAMPLE_RATE,
+        ),
+        Some(cpal::BufferSize::Fixed(callback_period_frames))
     );
     assert_eq!(
-        voice_input_buffer_size(&cpal::SupportedBufferSize::Unknown),
-        cpal::BufferSize::Default
+        automatic_voice_input_buffer_size(
+            &cpal::SupportedBufferSize::Range {
+                min: callback_period_frames + 1,
+                max: 8_192,
+            },
+            DISCORD_VOICE_SAMPLE_RATE,
+        ),
+        Some(cpal::BufferSize::Fixed(callback_period_frames + 1))
+    );
+    assert_eq!(
+        automatic_voice_input_buffer_size(
+            &cpal::SupportedBufferSize::Range {
+                min: 128,
+                max: callback_period_frames - 1,
+            },
+            DISCORD_VOICE_SAMPLE_RATE,
+        ),
+        Some(cpal::BufferSize::Fixed(callback_period_frames - 1))
+    );
+    assert_eq!(
+        automatic_voice_input_buffer_size(
+            &cpal::SupportedBufferSize::Unknown,
+            DISCORD_VOICE_SAMPLE_RATE,
+        ),
+        None
+    );
+}
+
+#[cfg(feature = "voice-playback")]
+#[test]
+fn configured_microphone_buffer_uses_requested_duration() {
+    assert_eq!(
+        voice_input_buffer_size(MicrophoneBufferMs::new(10), DISCORD_VOICE_SAMPLE_RATE),
+        cpal::BufferSize::Fixed(480)
+    );
+    assert_eq!(
+        voice_input_buffer_size(MicrophoneBufferMs::new(50), DISCORD_VOICE_SAMPLE_RATE),
+        cpal::BufferSize::Fixed(2_400)
     );
 }
 
@@ -2941,9 +3028,10 @@ fn encrypt_test_rtp_payload(
             let cipher = Aes256Gcm::new_from_slice(key).expect("test key is valid");
             let mut nonce = [0u8; 12];
             nonce[..RTP_AEAD_NONCE_SUFFIX_BYTES].copy_from_slice(&nonce_suffix);
+            let nonce = AesGcmNonce::from(nonce);
             cipher
                 .encrypt(
-                    AesGcmNonce::from_slice(&nonce),
+                    &nonce,
                     Payload {
                         msg: plaintext,
                         aad,
@@ -2955,9 +3043,10 @@ fn encrypt_test_rtp_payload(
             let cipher = XChaCha20Poly1305::new_from_slice(key).expect("test key is valid");
             let mut nonce = [0u8; 24];
             nonce[..RTP_AEAD_NONCE_SUFFIX_BYTES].copy_from_slice(&nonce_suffix);
+            let nonce = XNonce::from(nonce);
             cipher
                 .encrypt(
-                    XNonce::from_slice(&nonce),
+                    &nonce,
                     Payload {
                         msg: plaintext,
                         aad,

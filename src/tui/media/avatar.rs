@@ -11,8 +11,12 @@ use super::{
     AVATAR_PREVIEW_HEIGHT, AVATAR_PREVIEW_WIDTH, AvatarTarget, GuildIconTarget,
     MediaProtocolRenderSpec, PROFILE_POPUP_AVATAR_HEIGHT, PROFILE_POPUP_AVATAR_WIDTH,
     avatar_preview_url,
-    cache::{MediaImageCacheCore, MediaImageCacheEntry, RenderProtocolCache},
+    cache::{
+        MediaCacheStats, MediaImageCacheCore, MediaImageCacheEntry, MediaImageEntry,
+        RenderProtocolCache,
+    },
     decode::{DecodedMediaImage, MediaImageDecodeKey, MediaImageDecodeRequest},
+    estimated_media_protocol_bytes, picker_font_size,
     protocol_job::{MediaProtocolBuildJob, MediaProtocolBuildResult, MediaProtocolBuildTarget},
     work::{MediaWorkError, MediaWorkResult},
 };
@@ -20,7 +24,7 @@ use super::{
 /// Avatar images are small on screen but decoded originals can still add up
 /// as users scroll through large servers. Keep a generous URL-keyed LRU cap.
 pub(super) const MAX_AVATAR_IMAGE_CACHE_ENTRIES: usize = 32;
-const AVATAR_IMAGE_CACHE_DECODED_BYTE_BUDGET: u64 = 32 * 1024 * 1024;
+const AVATAR_IMAGE_CACHE_DECODED_BYTE_BUDGET: u64 = 12 * 1024 * 1024;
 
 pub(in crate::tui) struct AvatarImageCache {
     pub(super) picker: Option<Picker>,
@@ -29,24 +33,7 @@ pub(in crate::tui) struct AvatarImageCache {
     pub(super) protocol_jobs: Vec<MediaProtocolBuildJob>,
 }
 
-pub(super) enum AvatarImageEntry {
-    Loading {
-        last_used: u64,
-    },
-    Decoding {
-        generation: u64,
-        last_used: u64,
-    },
-    Ready {
-        generation: u64,
-        image: DecodedMediaImage,
-        protocols: Box<RenderProtocolCache<AvatarFrameProtocolKey>>,
-        last_used: u64,
-    },
-    Failed {
-        last_used: u64,
-    },
-}
+pub(super) type AvatarImageEntry = MediaImageEntry<RenderProtocolCache<AvatarFrameProtocolKey>>;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct AvatarProtocolKey {
@@ -116,57 +103,6 @@ impl AvatarProtocolKey {
     }
 }
 
-impl MediaImageCacheEntry for AvatarImageEntry {
-    fn last_used(&self) -> u64 {
-        match self {
-            AvatarImageEntry::Loading { last_used }
-            | AvatarImageEntry::Decoding { last_used, .. }
-            | AvatarImageEntry::Ready { last_used, .. }
-            | AvatarImageEntry::Failed { last_used } => *last_used,
-        }
-    }
-
-    fn decoded_image(&self) -> Option<&DecodedMediaImage> {
-        match self {
-            AvatarImageEntry::Ready { image, .. } => Some(image),
-            AvatarImageEntry::Loading { .. }
-            | AvatarImageEntry::Decoding { .. }
-            | AvatarImageEntry::Failed { .. } => None,
-        }
-    }
-
-    fn decoded_image_mut(&mut self) -> Option<&mut DecodedMediaImage> {
-        match self {
-            AvatarImageEntry::Ready { image, .. } => Some(image),
-            AvatarImageEntry::Loading { .. }
-            | AvatarImageEntry::Decoding { .. }
-            | AvatarImageEntry::Failed { .. } => None,
-        }
-    }
-
-    fn touch(&mut self, tick: u64) {
-        match self {
-            AvatarImageEntry::Loading { last_used }
-            | AvatarImageEntry::Decoding { last_used, .. }
-            | AvatarImageEntry::Ready { last_used, .. }
-            | AvatarImageEntry::Failed { last_used } => *last_used = tick,
-        }
-    }
-
-    fn is_loading(&self) -> bool {
-        matches!(self, AvatarImageEntry::Loading { .. })
-    }
-
-    fn decoding_generation(&self) -> Option<u64> {
-        match self {
-            AvatarImageEntry::Decoding { generation, .. } => Some(*generation),
-            AvatarImageEntry::Loading { .. }
-            | AvatarImageEntry::Ready { .. }
-            | AvatarImageEntry::Failed { .. } => None,
-        }
-    }
-}
-
 impl AvatarImageCache {
     pub(in crate::tui) fn new(picker: Option<Picker>) -> Self {
         Self {
@@ -177,17 +113,14 @@ impl AvatarImageCache {
         }
     }
 
-    pub(in crate::tui) fn render_state_with_popup(
+    /// Protect the final frame's avatars and queue work before either draw pass.
+    pub(in crate::tui) fn prepare(
         &mut self,
         targets: &[AvatarTarget],
         guild_targets: &[GuildIconTarget],
         popup_url: Option<&str>,
         popup_clip: Option<(u16, u16)>,
         circular: bool,
-    ) -> (
-        Vec<AvatarImage<'_>>,
-        Vec<GuildIconImage<'_>>,
-        Option<AvatarImage<'_>>,
     ) {
         for target in targets {
             let url = avatar_preview_url(&target.url, AVATAR_PREVIEW_WIDTH, AVATAR_PREVIEW_HEIGHT);
@@ -200,10 +133,14 @@ impl AvatarImageCache {
         if let Some(url) = popup_cache_url.as_deref() {
             self.cache.touch(&url.to_owned());
         }
+        for target in guild_targets {
+            self.cache.touch(&target.url);
+        }
+        self.prune_to_limit_with_guilds(targets, guild_targets);
 
         {
             let Some(picker) = self.picker.as_ref() else {
-                return (Vec::new(), Vec::new(), None);
+                return;
             };
 
             for target in targets {
@@ -258,12 +195,6 @@ impl AvatarImageCache {
                     ));
                 }
             }
-        }
-
-        for target in guild_targets {
-            self.cache.touch(&target.url);
-        }
-        if let Some(picker) = self.picker.as_ref() {
             for target in guild_targets {
                 let Some(AvatarImageEntry::Ready {
                     generation,
@@ -289,7 +220,23 @@ impl AvatarImageCache {
                 }
             }
         }
+    }
 
+    pub(in crate::tui) fn render_state_with_popup(
+        &self,
+        targets: &[AvatarTarget],
+        guild_targets: &[GuildIconTarget],
+        popup_url: Option<&str>,
+        popup_clip: Option<(u16, u16)>,
+        circular: bool,
+    ) -> (
+        Vec<AvatarImage<'_>>,
+        Vec<GuildIconImage<'_>>,
+        Option<AvatarImage<'_>>,
+    ) {
+        let popup_cache_url = popup_url.map(|url| {
+            avatar_preview_url(url, PROFILE_POPUP_AVATAR_WIDTH, PROFILE_POPUP_AVATAR_HEIGHT)
+        });
         let avatars = targets
             .iter()
             .filter_map(|target| {
@@ -372,18 +319,8 @@ impl AvatarImageCache {
         targets: &[AvatarTarget],
         guild_targets: &[GuildIconTarget],
     ) -> Vec<AppCommand> {
-        let intents: Vec<AppCommand> = guild_targets
-            .iter()
-            .map(|target| target.url.clone())
-            .chain(
-                targets
-                    .iter()
-                    .take(MAX_AVATAR_IMAGE_CACHE_ENTRIES)
-                    .map(|target| {
-                        avatar_preview_url(&target.url, AVATAR_PREVIEW_WIDTH, AVATAR_PREVIEW_HEIGHT)
-                    }),
-            )
-            .take(MAX_AVATAR_IMAGE_CACHE_ENTRIES)
+        let intents: Vec<AppCommand> = admitted_avatar_and_guild_urls(targets, guild_targets)
+            .into_iter()
             .filter_map(|url| self.next_request_for_cache_url(&url))
             .collect();
         self.prune_to_limit_with_guilds(targets, guild_targets);
@@ -402,19 +339,21 @@ impl AvatarImageCache {
         key: &str,
         upload: impl FnOnce() -> Option<ProfileAvatarUpload>,
     ) -> Option<AppCommand> {
-        if self.cache.entries.contains_key(key) {
+        let key = key.to_owned();
+        if !self.cache.can_insert_loading(&key, Instant::now()) {
             return None;
         }
         let upload = upload()?;
-        let last_used = self.cache.next_tick();
-        self.cache
-            .entries
-            .insert(key.to_owned(), AvatarImageEntry::Loading { last_used });
+        if !self
+            .cache
+            .insert_loading(key.clone(), |last_used| AvatarImageEntry::Loading {
+                last_used,
+            })
+        {
+            return None;
+        }
         self.prune_to_limit(&[]);
-        Some(AppCommand::LoadProfileAvatarPreview {
-            key: key.to_owned(),
-            upload,
-        })
+        Some(AppCommand::LoadProfileAvatarPreview { key, upload })
     }
 
     fn next_request_for_cache_url(&mut self, url: &str) -> Option<AppCommand> {
@@ -424,7 +363,6 @@ impl AvatarImageCache {
                 last_used,
             })
         {
-            self.prune_to_limit(&[]);
             return Some(AppCommand::LoadAttachmentPreview {
                 url: url.to_owned(),
             });
@@ -446,7 +384,93 @@ impl AvatarImageCache {
         }
     }
 
-    fn store_loaded(&mut self, url: &str) -> Option<MediaImageDecodeRequest> {
+    pub(in crate::tui) fn accepts_decode_request(&self, url: &str, generation: u64) -> bool {
+        self.cache
+            .decoded_generation_matches(&url.to_owned(), generation)
+    }
+
+    pub(in crate::tui) fn defer_loading(&mut self, url: &str) {
+        if self
+            .cache
+            .entries
+            .get(url)
+            .is_some_and(MediaImageCacheEntry::is_loading)
+        {
+            self.cache.entries.remove(url);
+        }
+    }
+
+    pub(in crate::tui) fn visible_source_urls(
+        &self,
+        targets: &[AvatarTarget],
+        guild_targets: &[GuildIconTarget],
+    ) -> Vec<String> {
+        admitted_avatar_and_guild_urls(targets, guild_targets)
+            .into_iter()
+            .chain(self.active_popup_avatar_url.iter().cloned())
+            .collect()
+    }
+
+    pub(in crate::tui) fn retain_source_consumers(
+        &mut self,
+        targets: &[AvatarTarget],
+        guild_targets: &[GuildIconTarget],
+        popup_url: Option<&str>,
+    ) {
+        let protected = admitted_avatar_and_guild_urls(targets, guild_targets)
+            .into_iter()
+            .chain(popup_url.map(|url| {
+                avatar_preview_url(url, PROFILE_POPUP_AVATAR_WIDTH, PROFILE_POPUP_AVATAR_HEIGHT)
+            }))
+            .collect::<HashSet<_>>();
+        self.cache.entries.retain(|url, entry| {
+            !matches!(
+                entry,
+                AvatarImageEntry::Loading { .. } | AvatarImageEntry::Decoding { .. }
+            ) || protected.contains(url)
+        });
+    }
+
+    pub(in crate::tui) fn reuse_cached_sources(
+        &mut self,
+        targets: &[AvatarTarget],
+        guild_targets: &[GuildIconTarget],
+        popup_url: Option<&str>,
+        mut lookup: impl FnMut(&str) -> Option<DecodedMediaImage>,
+    ) -> bool {
+        let mut reused = false;
+        let urls = admitted_avatar_and_guild_urls(targets, guild_targets)
+            .into_iter()
+            .chain(popup_url.map(|url| {
+                avatar_preview_url(url, PROFILE_POPUP_AVATAR_WIDTH, PROFILE_POPUP_AVATAR_HEIGHT)
+            }));
+        for url in urls {
+            if matches!(
+                self.cache.entries.get(&url),
+                Some(AvatarImageEntry::Ready { .. })
+            ) {
+                continue;
+            }
+            let Some(image) = lookup(&url) else {
+                continue;
+            };
+            let generation = self.cache.next_decode_generation();
+            let last_used = self.cache.next_tick();
+            self.cache.entries.insert(
+                url,
+                AvatarImageEntry::Ready {
+                    generation,
+                    image,
+                    protocols: Box::new(RenderProtocolCache::new()),
+                    last_used,
+                },
+            );
+            reused = true;
+        }
+        reused
+    }
+
+    pub(in crate::tui) fn store_loaded(&mut self, url: &str) -> Option<MediaImageDecodeRequest> {
         self.cache.start_decode_request(
             url.to_owned(),
             self.picker.is_some(),
@@ -457,6 +481,13 @@ impl AvatarImageCache {
             |last_used| AvatarImageEntry::Failed { last_used },
             MediaImageDecodeKey::Avatar,
         )
+    }
+
+    pub(in crate::tui) fn ready_image_for_url(&self, url: &str) -> Option<DecodedMediaImage> {
+        let AvatarImageEntry::Ready { image, .. } = self.cache.entries.get(url)? else {
+            return None;
+        };
+        Some(image.fresh_playback())
     }
 
     pub(in crate::tui) fn store_decoded(
@@ -485,9 +516,7 @@ impl AvatarImageCache {
                     },
                 );
             }
-            Err(MediaWorkError::Busy) => {
-                self.cache.entries.remove(&key);
-            }
+            Err(MediaWorkError::Busy) => {}
             Err(MediaWorkError::Failed(_)) => {
                 self.cache
                     .entries
@@ -497,6 +526,15 @@ impl AvatarImageCache {
     }
 
     fn store_failed(&mut self, url: &str) {
+        // A cache hit may have replaced the placeholder while HTTP was in flight.
+        if !self
+            .cache
+            .entries
+            .get(url)
+            .is_some_and(MediaImageCacheEntry::is_loading)
+        {
+            return;
+        }
         self.cache
             .store_failed_if_present(url.to_owned(), |last_used| AvatarImageEntry::Failed {
                 last_used,
@@ -552,6 +590,43 @@ impl AvatarImageCache {
         }
     }
 
+    pub(in crate::tui) fn retained_stats(&self) -> (usize, u64, u64) {
+        self.cache.retained_stats()
+    }
+
+    pub(in crate::tui) fn diagnostics(&self) -> MediaCacheStats {
+        self.cache.diagnostics(
+            MAX_AVATAR_IMAGE_CACHE_ENTRIES,
+            AVATAR_IMAGE_CACHE_DECODED_BYTE_BUDGET,
+        )
+    }
+
+    pub(in crate::tui) fn next_retry_deadline(
+        &self,
+        targets: &[AvatarTarget],
+        guild_targets: &[GuildIconTarget],
+        popup_url: Option<&str>,
+    ) -> Option<Instant> {
+        self.picker.as_ref()?;
+        admitted_avatar_urls(targets)
+            .into_iter()
+            .chain(guild_targets.iter().map(|target| target.url.clone()))
+            .chain(popup_url.map(|url| {
+                avatar_preview_url(url, PROFILE_POPUP_AVATAR_WIDTH, PROFILE_POPUP_AVATAR_HEIGHT)
+            }))
+            .filter_map(|url| self.cache.retry_deadline(&url))
+            .min()
+    }
+
+    pub(in crate::tui) fn forget_failures(&mut self) {
+        self.cache.forget_failures();
+        for entry in self.cache.entries.values_mut() {
+            if let AvatarImageEntry::Ready { protocols, .. } = entry {
+                protocols.forget_failures();
+            }
+        }
+    }
+
     pub(in crate::tui) fn pause_animations(&mut self) {
         self.cache.pause_animations();
     }
@@ -572,21 +647,18 @@ impl AvatarImageCache {
         let MediaProtocolBuildTarget::Avatar { url, key } = completed.target else {
             return;
         };
-        let failed = match self.cache.entries.get_mut(&url) {
-            Some(AvatarImageEntry::Ready {
-                generation,
-                protocols,
-                ..
-            }) if *generation == completed.generation => {
-                protocols.store_result(key, completed.result).is_err()
-            }
-            _ => false,
-        };
-        if failed {
-            let last_used = self.cache.next_tick();
-            self.cache
-                .entries
-                .insert(url, AvatarImageEntry::Failed { last_used });
+        let font_size = self.picker.as_ref().map_or((10, 20), picker_font_size);
+        let protocol_bytes = estimated_media_protocol_bytes(key.render_spec(), font_size);
+        if let Some(AvatarImageEntry::Ready {
+            generation,
+            protocols,
+            ..
+        }) = self.cache.entries.get_mut(&url)
+            && *generation == completed.generation
+        {
+            // A render failure belongs to this exact layout and frame. The
+            // decoded source and protocols for other layouts remain valid.
+            protocols.store_result(key, completed.result, protocol_bytes);
         }
     }
 
@@ -599,12 +671,8 @@ impl AvatarImageCache {
         targets: &[AvatarTarget],
         guild_targets: &[GuildIconTarget],
     ) {
-        let protected = targets
-            .iter()
-            .take(MAX_AVATAR_IMAGE_CACHE_ENTRIES)
-            .map(|target| {
-                avatar_preview_url(&target.url, AVATAR_PREVIEW_WIDTH, AVATAR_PREVIEW_HEIGHT)
-            })
+        let protected = admitted_avatar_urls(targets)
+            .into_iter()
             .chain(self.active_popup_avatar_url.iter().cloned())
             .chain(guild_targets.iter().map(|target| target.url.clone()))
             .collect::<HashSet<_>>();
@@ -613,5 +681,86 @@ impl AvatarImageCache {
             AVATAR_IMAGE_CACHE_DECODED_BYTE_BUDGET,
             |url| protected.contains(url.as_str()),
         );
+    }
+}
+
+fn admitted_avatar_and_guild_urls(
+    targets: &[AvatarTarget],
+    guild_targets: &[GuildIconTarget],
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    guild_targets
+        .iter()
+        .map(|target| target.url.clone())
+        .chain(admitted_avatar_urls(targets))
+        .filter(|url| seen.insert(url.clone()))
+        .take(MAX_AVATAR_IMAGE_CACHE_ENTRIES)
+        .collect()
+}
+
+fn admitted_avatar_urls(targets: &[AvatarTarget]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    targets
+        .iter()
+        .map(|target| avatar_preview_url(&target.url, AVATAR_PREVIEW_WIDTH, AVATAR_PREVIEW_HEIGHT))
+        .filter(|url| seen.insert(url.clone()))
+        .take(MAX_AVATAR_IMAGE_CACHE_ENTRIES)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guild_sources_remain_live_and_admitted_with_bounded_requests() {
+        let guilds = (0..=MAX_AVATAR_IMAGE_CACHE_ENTRIES)
+            .map(|index| GuildIconTarget {
+                url: format!("guild-{index}"),
+                area: Default::default(),
+            })
+            .collect::<Vec<_>>();
+        let mut cache = AvatarImageCache::new(Some(Picker::halfblocks()));
+        let urls = cache.visible_source_urls(&[], &guilds);
+        assert_eq!(urls.len(), MAX_AVATAR_IMAGE_CACHE_ENTRIES);
+        assert_eq!(urls.first().map(String::as_str), Some("guild-0"));
+        assert!(!urls.contains(&"guild-32".to_owned()));
+
+        let requests = cache.next_requests_with_guilds(&[], &guilds);
+        assert_eq!(requests.len(), MAX_AVATAR_IMAGE_CACHE_ENTRIES);
+        cache.retain_source_consumers(&[], &guilds, None);
+        assert!(cache.cache.entries.contains_key("guild-0"));
+        assert!(!cache.cache.entries.contains_key("guild-32"));
+    }
+
+    #[test]
+    fn guild_source_reuse_admits_guild_url() {
+        let guilds = [GuildIconTarget {
+            url: "guild-icon".to_owned(),
+            area: Default::default(),
+        }];
+        let mut cache = AvatarImageCache::new(Some(Picker::halfblocks()));
+        let mut visited = Vec::new();
+        assert!(!cache.reuse_cached_sources(&[], &guilds, None, |url| {
+            visited.push(url.to_owned());
+            None
+        }));
+        assert_eq!(visited, ["guild-icon"]);
+    }
+
+    #[test]
+    fn avatar_draw_does_not_change_final_frame_cache_protection() {
+        let mut cache = AvatarImageCache::new(Some(Picker::halfblocks()));
+        cache.active_popup_avatar_url = Some("popup-avatar".to_owned());
+        let tick = cache.cache.tick;
+
+        let _ = cache.render_state_with_popup(&[], &[], None, None, false);
+
+        assert_eq!(
+            cache.active_popup_avatar_url.as_deref(),
+            Some("popup-avatar")
+        );
+        assert_eq!(cache.cache.tick, tick);
+        assert!(cache.take_protocol_jobs().is_empty());
     }
 }

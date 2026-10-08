@@ -9,39 +9,101 @@ use crate::discord::{
 };
 use ratatui_image::protocol::Protocol;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelSwitcherMode {
+    Channels,
+    Guilds,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChannelSwitcherItem {
-    pub channel_id: Id<ChannelMarker>,
-    pub guild_id: Option<Id<GuildMarker>>,
-    pub guild_name: Option<String>,
+pub struct ChannelSwitcherDisplay {
     pub group_label: String,
     pub parent_label: Option<String>,
-    pub channel_label: String,
+    pub label: String,
     pub unread: ChannelUnreadState,
-    pub unread_message_count: usize,
-    pub search_name: String,
+    /// Direct messages may show a numeric badge while keeping the same unread
+    /// name style as the channel pane.
+    pub badge_state: ChannelUnreadState,
+    pub search_text: String,
     pub depth: usize,
     pub group_order: usize,
     pub original_index: usize,
 }
 
+/// Keeps target-specific navigation data separate from the shared presentation
+/// data used to render and rank every switcher row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ChannelSwitcherItem {
+    Channel {
+        channel_id: Id<ChannelMarker>,
+        guild_name: Option<String>,
+        display: ChannelSwitcherDisplay,
+    },
+    Guild {
+        guild_id: Id<GuildMarker>,
+        display: ChannelSwitcherDisplay,
+    },
+}
+
+impl ChannelSwitcherItem {
+    pub fn channel_id(&self) -> Option<Id<ChannelMarker>> {
+        match self {
+            Self::Channel { channel_id, .. } => Some(*channel_id),
+            Self::Guild { .. } => None,
+        }
+    }
+
+    pub fn display(&self) -> &ChannelSwitcherDisplay {
+        match self {
+            Self::Channel { display, .. } | Self::Guild { display, .. } => display,
+        }
+    }
+
+    pub fn display_mut(&mut self) -> &mut ChannelSwitcherDisplay {
+        match self {
+            Self::Channel { display, .. } | Self::Guild { display, .. } => display,
+        }
+    }
+}
+
+/// A consistent popup snapshot shared by rendering, cursor placement, and hit
+/// testing.
+#[derive(Clone, Copy, Debug)]
+pub struct ChannelSwitcherView<'a> {
+    pub query: &'a str,
+    pub query_cursor: usize,
+    pub mode: ChannelSwitcherMode,
+    pub items: &'a [ChannelSwitcherItem],
+    pub selected: usize,
+    pub scroll: usize,
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
-impl ChannelSwitcherItem {
-    pub(crate) fn test(channel_id: Id<ChannelMarker>) -> Self {
+impl ChannelSwitcherDisplay {
+    pub(crate) fn test() -> Self {
         Self {
-            channel_id,
-            guild_id: None,
-            guild_name: None,
             group_label: String::new(),
             parent_label: None,
-            channel_label: String::new(),
+            label: String::new(),
             unread: ChannelUnreadState::Seen,
-            unread_message_count: 0,
-            search_name: String::new(),
+            badge_state: ChannelUnreadState::Seen,
+            search_text: String::new(),
             depth: 0,
             group_order: 0,
             original_index: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+impl ChannelSwitcherItem {
+    pub(crate) fn test(channel_id: Id<ChannelMarker>, display: ChannelSwitcherDisplay) -> Self {
+        Self::Channel {
+            channel_id,
+            guild_name: None,
+            display,
         }
     }
 }
@@ -65,6 +127,7 @@ pub struct AttachmentDownloadProgressView {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MessageActionKind {
     CopyContent,
+    Translate,
     OpenReactionPicker,
     Reply,
     OpenDeleteConfirmation,
@@ -92,6 +155,7 @@ impl MessageActionKind {
             Self::OpenPinConfirmation => Some(DiscordAction::PinMessage),
             Self::OpenPollVotePicker => Some(DiscordAction::VotePoll),
             Self::CopyContent
+            | Self::Translate
             | Self::OpenUrl
             | Self::PlayMedia
             | Self::ViewAttachment
@@ -248,7 +312,7 @@ pub enum ForumPostComposerField {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ForumPostComposerTagView {
+pub struct ForumTagView {
     pub name: String,
     /// Unicode emoji shown inline. `None` for a custom or emoji-less tag.
     pub unicode_emoji: Option<String>,
@@ -262,6 +326,8 @@ pub struct ForumPostComposerTagView {
     /// once the five-tag cap is reached, so the renderer can dim them.
     pub selectable: bool,
 }
+
+pub type ForumPostComposerTagView = ForumTagView;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForumPostComposerAttachmentView {
@@ -309,21 +375,7 @@ pub enum ThreadEditField {
     Cancel,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ThreadEditTagView {
-    pub name: String,
-    /// Unicode emoji shown inline. `None` for a custom or emoji-less tag.
-    pub unicode_emoji: Option<String>,
-    /// CDN url of a custom tag emoji, overlaid as an image on a reserved gap.
-    pub custom_emoji_url: Option<String>,
-    /// Resolved `:name:` text fallback shown until the custom emoji image loads.
-    pub custom_emoji_label: Option<String>,
-    pub selected: bool,
-    pub active: bool,
-    /// Whether this tag can still be toggled on. `false` for unselected tags
-    /// once the five-tag cap is reached, so the renderer can dim them.
-    pub selectable: bool,
-}
+pub type ThreadEditTagView = ForumTagView;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ThreadEditView {
@@ -351,9 +403,9 @@ pub struct ThreadEditView {
 }
 
 pub enum LocalUploadPreviewView<'a> {
-    Loading { filename: String },
+    Loading { filename: &'a str },
     Ready { protocol: &'a Protocol },
-    Failed { filename: String, message: String },
+    Failed { filename: &'a str, message: &'a str },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -364,21 +416,6 @@ pub struct AttachmentViewerItem {
     pub url: Option<String>,
     pub size_bytes: u64,
     pub media_type: Option<AttachmentMediaType>,
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-impl AttachmentViewerItem {
-    pub(crate) fn test() -> Self {
-        Self {
-            index: 0,
-            total: 0,
-            filename: String::new(),
-            url: None,
-            size_bytes: 0,
-            media_type: None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -687,10 +724,6 @@ impl ChannelPaneEntry<'_> {
         }
     }
 
-    pub(super) fn is_selectable(&self) -> bool {
-        true
-    }
-
     pub(super) fn cursor(&self) -> ChannelPaneCursor {
         match self {
             Self::CategoryHeader { state, .. }
@@ -718,13 +751,13 @@ pub(super) enum ChannelPaneCursor {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum ChannelBranch {
+pub enum TreeBranch {
     None,
     Middle,
     Last,
 }
 
-impl ChannelBranch {
+impl TreeBranch {
     pub fn prefix(self) -> &'static str {
         match self {
             Self::None => "",
@@ -744,7 +777,13 @@ impl ChannelBranch {
     pub(super) fn is_category_child(self) -> bool {
         !matches!(self, Self::None)
     }
+
+    pub(super) fn is_folder_child(self) -> bool {
+        !matches!(self, Self::None)
+    }
 }
+
+pub type ChannelBranch = TreeBranch;
 
 #[derive(Debug, Clone, Copy)]
 pub enum GuildPaneEntry<'a> {
@@ -759,26 +798,7 @@ pub enum GuildPaneEntry<'a> {
     },
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum GuildBranch {
-    None,
-    Middle,
-    Last,
-}
-
-impl GuildBranch {
-    pub fn prefix(self) -> &'static str {
-        match self {
-            Self::None => "",
-            Self::Middle => "├ ",
-            Self::Last => "└ ",
-        }
-    }
-
-    pub(super) fn is_folder_child(self) -> bool {
-        !matches!(self, Self::None)
-    }
-}
+pub type GuildBranch = TreeBranch;
 
 pub const GUILD_PANE_ENTRY_HEIGHT: usize = 2;
 

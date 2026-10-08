@@ -72,7 +72,7 @@ pub use commands::{
     GlobalUserProfileUpdate, GuildUserProfileUpdate, MediaPlaybackRequestId, MediaPlaybackSource,
     MediaPlaybackTarget, MessageHistoryAfterMode, MessageSearchAuthorType, MessageSearchHas,
     MessageSearchPage, MessageSearchQuery, MuteDuration, ProfileAvatarUpload, ReplyReference,
-    StreamCaptureTargetsRequestId, UserProfileUpdate,
+    StreamCaptureTargetsRequestId, TranslationTarget, UserProfileUpdate,
 };
 pub use commands::{
     MAX_PROFILE_AVATAR_BYTES, MAX_UPLOAD_ATTACHMENT_COUNT, MAX_UPLOAD_PREVIEW_BYTES,
@@ -94,10 +94,12 @@ pub use guild::{
 pub use ids::{Id, marker};
 pub use member::{MemberInfo, MemberOnboardingStatus, RoleInfo};
 pub use message::{
-    AttachmentInfo, AttachmentMediaType, AttachmentUpdate, EmbedFieldInfo, EmbedInfo,
-    InlinePreviewInfo, MESSAGE_FLAG_SUPPRESS_EMBEDS, MentionInfo, MessageInfo,
-    MessageInteractionInfo, MessageKind, MessageReferenceInfo, MessageSnapshotInfo, PollAnswerInfo,
-    PollInfo, ReactionInfo, ReactionUserInfo, ReplyInfo, StickerFormat, StickerInfo,
+    AttachmentInfo, AttachmentMediaType, AttachmentUpdate, ComponentMediaInfo,
+    ComponentMediaItemInfo, ComponentSelectKind, ComponentSelectOptionInfo, EmbedFieldInfo,
+    EmbedInfo, InlinePreviewInfo, MESSAGE_FLAG_IS_COMPONENTS_V2, MESSAGE_FLAG_SUPPRESS_EMBEDS,
+    MentionInfo, MessageComponentInfo, MessageInfo, MessageInteractionInfo, MessageKind,
+    MessageReferenceInfo, MessageSnapshotInfo, PollAnswerInfo, PollInfo, ReactionInfo,
+    ReactionUserInfo, ReplyInfo, StickerFormat, StickerInfo,
 };
 pub(crate) use message_policy::{
     validate_attachment_sizes, validate_message_content, validate_message_content_length,
@@ -110,7 +112,7 @@ pub(crate) use permission::PermissionDecision;
 pub use permission::{DiscordPermission, PermissionDataGap};
 pub use presence::{
     ActivityAssets, ActivityButton, ActivityEmoji, ActivityInfo, ActivityKind, ActivityParty,
-    ActivitySecrets, ActivityTimestamps, PresenceStatus,
+    ActivitySecrets, ActivityTimestamps, PresenceStatus, RichPresenceSelection,
 };
 pub use profile::{
     FriendStatus, MutualFriendInfo, MutualGuildInfo, RelationshipInfo, RelationshipUpdateInfo,
@@ -139,8 +141,8 @@ pub use verification::{
     GuildParticipationBlock, GuildParticipationDataGap, GuildParticipationRestriction,
 };
 pub use voice::{
-    MicrophoneSensitivityDb, VoiceAudioSettings, VoiceParticipantPlaybackSettings,
-    VoiceParticipantVolumePercent, VoiceVolumePercent,
+    MicrophoneBufferMs, MicrophoneSensitivityDb, VoiceAudioSettings,
+    VoiceParticipantPlaybackSettings, VoiceParticipantVolumePercent, VoiceVolumePercent,
 };
 pub use voice::{
     StreamCaptureTarget, StreamCaptureTargetKind, StreamCreateInfo, StreamDeleteInfo,

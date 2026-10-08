@@ -97,26 +97,7 @@ pub(super) fn handle_dashboard_action(
             state.scroll_focused_pane_horizontal_right();
             None
         }
-        DashboardAction::ActivateFocused => match focus {
-            FocusPane::Guilds => {
-                if state.confirm_selected_guild() {
-                    state.focus_pane(FocusPane::Channels);
-                }
-                None
-            }
-            FocusPane::Channels => {
-                let command = state.confirm_selected_channel_command();
-                if command.is_some() {
-                    state.focus_pane(FocusPane::Messages);
-                }
-                command
-            }
-            FocusPane::Members => {
-                state.open_selected_member_actions();
-                None
-            }
-            FocusPane::Messages => state.activate_selected_message_pane_item(),
-        },
+        DashboardAction::ActivateFocused => super::super::actions::activate_focused_target(state),
     }
 }
 
@@ -141,7 +122,7 @@ pub(super) fn execute_ui_action(
         UiAction::OpenOptions => state.open_options_category_picker(),
         UiAction::ChannelSwitcher => state.open_channel_switcher(),
         UiAction::OpenNotificationInbox => state.open_notification_inbox(),
-        UiAction::OpenDebugLog => state.open_debug_log_popup(),
+        UiAction::OpenDebugPanel => state.open_debug_log_popup(),
         UiAction::RefreshScreen => state.request_terminal_refresh(),
         UiAction::OpenDisplayOptions => {
             state.open_options_category_from_shortcut(OptionsCategoryShortcut::Display)

@@ -2,6 +2,167 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.1] - 2026-09-29
+
+### Bug Fixes
+
+- _(tui)_ Batch mouse-wheel redraws to reduce scroll lag (#381) in [#381](https://github.com/chojs23/concord/pull/381) by @chojs23
+
+### Documentation
+
+- Remove the powershell one-line installer path by @chojs23
+
+### Features
+
+- Add KLIPY GIF search to the composer (#377) in [#377](https://github.com/chojs23/concord/pull/377) by @TheDutchSmoke
+
+### New Contributors
+
+- @TheDutchSmoke made their first contribution in [#377](https://github.com/chojs23/concord/pull/377)
+
+## [2.6.0] - 2026-09-22
+
+### Features
+
+- _(tui)_ Rebuild mouse input around semantic interaction targets by @chojs23
+- _(message)_ Add message and composer translation by @chojs23
+
+## [2.5.22] - 2026-09-19
+
+### Bug Fixes
+
+- _(tui)_ Fix uncategorized channels appearing below category blocks (#372) in [#372](https://github.com/chojs23/concord/pull/372) by @chojs23
+- _(rpc)_ Preserve client-provided RPC activity names (#374) in [#374](https://github.com/chojs23/concord/pull/374) by @chojs23
+
+### Features
+
+- _(stream)_ Support concurrent stream playback (#373) in [#373](https://github.com/chojs23/concord/pull/373) by @chojs23
+
+## [2.5.21] - 2026-09-15
+
+### Bug Fixes
+
+- _(voice)_ Tolerate capture latency to prevent microphone dropouts (#369) in [#369](https://github.com/chojs23/concord/pull/369) by @chojs23
+- _(tui)_ Preserve reply composer drafts (#345) in [#345](https://github.com/chojs23/concord/pull/345) by @flooryyyy
+
+### Features
+
+- _(tui)_ Search servers in the channel switcher with a `*` prefix (#368) in [#368](https://github.com/chojs23/concord/pull/368) by @sunglasseslol
+
+### New Contributors
+
+- @sunglasseslol made their first contribution in [#368](https://github.com/chojs23/concord/pull/368)
+- @flooryyyy made their first contribution in [#345](https://github.com/chojs23/concord/pull/345)
+
+## [2.5.20] - 2026-09-12
+
+### Bug Fixes
+
+- _(voice)_ Adapt microphone buffering to device behavior (#361) in [#361](https://github.com/chojs23/concord/pull/361) by @chojs23
+- _(voice)_ Replace adaptive microphone recovery with fixed platform buffers (#363) in [#363](https://github.com/chojs23/concord/pull/363) by @chojs23
+- _(voice)_ Fix microphone frame loss caused by queue replacement by @chojs23
+
+## [2.5.19] - 2026-09-11
+
+### Bug Fixes
+
+- _(voice)_ Use the host-default buffer for all microphone input streams (#356) in [#356](https://github.com/chojs23/concord/pull/356) by @chojs23
+- _(voice)_ Enable CPAL real-time audio thread priority (#357) in [#357](https://github.com/chojs23/concord/pull/357) by @chojs23
+- _(tui)_ Fix filtered channel highlight restoration after background events (#358) in [#358](https://github.com/chojs23/concord/pull/358) by @chojs23
+
+### Documentation
+
+- Update debug mode instruction by @chojs23
+
+### Miscellaneous Tasks
+
+- _(deps)_ Update crates and unify TLS verification by @chojs23
+
+## [2.5.18] - 2026-09-09
+
+### Bug Fixes
+
+- Show only current-process logs in the debug panel by @chojs23
+- _(media)_ Preserve active images and retire stale work by @chojs23
+- Gate packed capture helper to supported platforms by @chojs23
+- _(tui)_ Prioritize fixed arrow selection in selectable contexts (#353) in [#353](https://github.com/chojs23/concord/pull/353) by @chojs23
+- _(message)_ Fix channel actions to use the highlighted filtered entry (#354) in [#354](https://github.com/chojs23/concord/pull/354) by @chojs23
+
+### Features
+
+- _(presence)_ Automatic client switching (#349) in [#349](https://github.com/chojs23/concord/pull/349) by @oneshinyboi
+
+### Refactor
+
+- Reduce duplication and simplify shared logic by @chojs23
+
+### New Contributors
+
+- @oneshinyboi made their first contribution in [#349](https://github.com/chojs23/concord/pull/349)
+
+## [2.5.17] - 2026-09-07
+
+### Bug Fixes
+
+- _(media)_ Reuse loaded media during scroll redraws by @chojs23
+- _(media)_ Stabilize preview retries and avatar redraws by @chojs23
+- Raise image preview download limit to 16 MB by @chojs23
+
+### Features
+
+- Improve debug panel by @chojs23
+
+## [2.5.16] - 2026-09-04
+
+### Bug Fixes
+
+- _(voice)_ Stop demanding a transition id in DAVE prepare epoch (#325) in [#325](https://github.com/chojs23/concord/pull/325) by @4EEZE
+- Pin the patched thorvg-sys revision for ARM Linux builds (#346) in [#346](https://github.com/chojs23/concord/pull/346) by @chojs23
+
+### Documentation
+
+- Update readme by @chojs23
+
+### Features
+
+- Render timestamps in format <t:1235790:R> (#328) in [#328](https://github.com/chojs23/concord/pull/328) by @jahitosis1
+- _(tui)_ Add distinct styling for timestamps by @chojs23
+
+### Performance
+
+- _(media)_ Bound the media caches by bytes, retry failed fetches, add animate_previews (#318) in [#318](https://github.com/chojs23/concord/pull/318) by @4EEZE
+
+### New Contributors
+
+- @jahitosis1 made their first contribution in [#328](https://github.com/chojs23/concord/pull/328)
+
+## [2.5.15] - 2026-09-01
+
+### Bug Fixes
+
+- _(notifications)_ Use OSC protocols for macOS terminal alerts (#343) in [#343](https://github.com/chojs23/concord/pull/343) by @chojs23
+- Disable Opus SIMD only for ARM32 Linux targets (#344) in [#344](https://github.com/chojs23/concord/pull/344) by @chojs23
+
+## [2.5.14] - 2026-08-30
+
+### Bug Fixes
+
+- _(tui)_ Expand tabs in fenced code blocks (#336) in [#336](https://github.com/chojs23/concord/pull/336) by @gandol
+- _(tui)_ Preserve syntax semantics when expanding code tabs by @chojs23
+- _(voice)_ Satisfy Rust 1.91 clippy (#334) in [#334](https://github.com/chojs23/concord/pull/334) by @Andiveli
+- _(ci)_ Skip CI for unrelated repository changes by @chojs23
+- _(messages)_ Fix Components V2 section thumbnail layout by @chojs23
+
+### Features
+
+- _(tui)_ Enlarge standalone custom emoji previews (#335) in [#335](https://github.com/chojs23/concord/pull/335) by @gandol
+- _(messages)_ Support Components V2 and improve embed rendering (#340) in [#340](https://github.com/chojs23/concord/pull/340) by @chojs23
+- _(tui)_ Show voice channel capacity in channel pane by @chojs23
+
+### New Contributors
+
+- @Andiveli made their first contribution in [#334](https://github.com/chojs23/concord/pull/334)
+
 ## [2.5.13] - 2026-08-24
 
 ### Bug Fixes

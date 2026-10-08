@@ -30,7 +30,7 @@ struct MessageItemLinesInput<'a> {
     content: Vec<MessageContentLine>,
     reactions: Vec<MessageContentLine>,
     content_width: usize,
-    preview_spacers: &'a [InlinePreviewSpacer],
+    preview_spacer: Option<&'a InlinePreviewSpacer>,
     bottom_gap: bool,
     line_offset: usize,
     avatar_offset: u16,
@@ -214,14 +214,12 @@ pub(in crate::tui::ui) fn render_messages(
         Paragraph::new(lines).style(theme::current().style(theme::HighlightGroup::Normal)),
         message_areas.list,
     );
-    let selected_avatar_body_top =
-        selected.and_then(|selected| render_plan.row(selected).map(|row| row.body_top));
     for avatar in media.avatar_images {
         if let Some(area) = message_avatar_area(
             message_areas.list,
             avatar.row,
             avatar.visible_height,
-            selected_avatar_x_offset(selected_avatar_body_top, avatar.row),
+            MESSAGE_SELECTION_PREFIX_WIDTH,
         ) && !intersects_any(area, media_occlusion_areas)
         {
             frame.render_widget(RatatuiImage::new(avatar.protocol), area);
@@ -258,17 +256,14 @@ pub(in crate::tui::ui) fn render_messages(
         let Some(row_plan) = render_plan.row(image_preview.message_index) else {
             continue;
         };
-        let row = row_plan
-            .body_top
-            .saturating_add(row_plan.metrics.body_rows() as isize)
-            .saturating_add(image_preview.preview_y_offset_rows as isize)
-            .saturating_sub(1);
+        let row = row_plan.image_preview_row(
+            image_preview.body_line_index,
+            image_preview.preview_y_offset_rows,
+        );
         if let Some(mut preview_area) = inline_image_preview_area(
             message_areas.list,
             row,
-            image_preview
-                .preview_x_offset_columns
-                .saturating_add(selected_message_content_x_offset(row_plan.selected)),
+            image_preview.preview_x_offset_columns,
             image_preview.preview_width,
             image_preview.preview_height,
             image_preview.accent_color,
@@ -330,11 +325,20 @@ fn message_viewport_lines_from_plan(
             lines.push(line);
         }
 
-        let (content, reactions) = format_message_content_sections_with_loaded_custom_emoji_urls(
-            row.message,
-            state,
-            plan.layout.content_width.max(8),
-            loaded_custom_emoji_urls,
+        let (mut content, reactions) =
+            format_message_content_sections_with_loaded_custom_emoji_urls(
+                row.message,
+                state,
+                plan.layout.content_width.max(8),
+                loaded_custom_emoji_urls,
+            );
+        content.extend(
+            format_message_translation_lines_with_loaded_custom_emoji_urls(
+                row.message,
+                state,
+                plan.layout.content_width.max(8),
+                loaded_custom_emoji_urls,
+            ),
         );
         body_emoji_slots.push(
             content
@@ -352,8 +356,8 @@ fn message_viewport_lines_from_plan(
                 .collect(),
         );
 
-        let sent_time = format_message_sent_time(row.message.id, state.hour_format_24());
-        let preview_spacers = inline_preview_spacers_for_message(
+        let sent_time = format_message_local_time(row.message.id, state.hour_format_24());
+        let preview_spacer = inline_preview_spacer_for_message(
             row.message,
             plan.layout.preview_width,
             plan.layout.max_preview_height,
@@ -367,7 +371,7 @@ fn message_viewport_lines_from_plan(
             content,
             reactions,
             content_width: plan.layout.content_width,
-            preview_spacers: &preview_spacers,
+            preview_spacer: preview_spacer.as_ref(),
             bottom_gap: row.bottom_gap,
             line_offset: row.item_line_offset,
             avatar_offset,
@@ -529,9 +533,7 @@ fn render_inline_reaction_emojis(
                 plan.layout.content_width,
                 true,
             );
-            let base_col = list.x as isize
-                + avatar_offset
-                + selected_message_content_x_offset(row.selected) as isize;
+            let base_col = list.x as isize + avatar_offset;
             let reaction_top = row.reaction_top;
             layout.slots.into_iter().map(move |slot| EmojiSlot {
                 row_in_list: reaction_top + slot.line as isize,
@@ -563,9 +565,7 @@ fn render_inline_message_body_emojis(
         .zip(body_emoji_slots)
         .take_while(|(row, _)| row.message_top < list.height as isize)
         .flat_map(|(row, row_slots)| {
-            let base_col = list.x as isize
-                + avatar_offset
-                + selected_message_content_x_offset(row.selected) as isize;
+            let base_col = list.x as isize + avatar_offset;
             let body_top =
                 row.body_top + state.message_header_line_count_at(row.global_index) as isize;
             row_slots.into_iter().map(move |slot| EmojiSlot {
@@ -579,87 +579,45 @@ fn render_inline_message_body_emojis(
     overlay_emoji_slots(frame, list, emoji_images, media_occlusion_areas, slots);
 }
 
-#[cfg(test)]
-pub(in crate::tui::ui) fn message_body_custom_emoji_rows(
-    messages: &[&MessageState],
-    state: &DashboardState,
-    content_width: usize,
-    selected: Option<usize>,
-    loaded_custom_emoji_urls: &[String],
-    preview_width: u16,
-    max_preview_height: u16,
-) -> Vec<isize> {
-    let mut rows = Vec::new();
-    let layout = MessageViewportLayout {
-        content_width,
-        list_width: content_width,
-        selected_card_width: content_width,
-        preview_width,
-        max_preview_height,
-    };
-    let plan_rows = MessageViewportPlan::new(
-        messages,
-        selected,
-        state,
-        layout.content_width,
-        layout.preview_width,
-        layout.max_preview_height,
-    );
-    let plan = MessageRenderPlan {
-        rows: &plan_rows,
-        layout,
-    };
-
-    for row in plan.rows.rows() {
-        let body_lines =
-            crate::tui::message::format::format_message_content_lines_with_loaded_custom_emoji_urls(
-                row.message,
-                state,
-                content_width.max(8),
-                loaded_custom_emoji_urls,
-            );
-        for (line_idx, line) in body_lines.iter().enumerate() {
-            if !line.image_slots.is_empty() {
-                rows.push(
-                    row.body_top
-                        + state.message_header_line_count_at(row.global_index) as isize
-                        + line_idx as isize,
-                );
-            }
-        }
-    }
-
-    rows
-}
-
 pub(in crate::tui::ui) fn render_image_preview(
     frame: &mut Frame,
     area: Rect,
     image_preview: ImagePreviewState<'_>,
 ) {
     match image_preview {
-        ImagePreviewState::Loading { filename } => frame.render_widget(
-            Paragraph::new(format!("loading {filename}..."))
-                .style(theme::current().apply(
-                    theme::HighlightGroup::Loading,
-                    theme::current().style(theme::HighlightGroup::Normal),
-                ))
-                .wrap(Wrap { trim: false }),
+        ImagePreviewState::Loading { filename } => render_image_preview_status(
+            frame,
             area,
+            format!("loading {filename}..."),
+            theme::HighlightGroup::Loading,
         ),
-        ImagePreviewState::Failed { filename, message } => frame.render_widget(
-            Paragraph::new(format!("{filename}: {message}"))
-                .style(theme::current().apply(
-                    theme::HighlightGroup::Error,
-                    theme::current().style(theme::HighlightGroup::Normal),
-                ))
-                .wrap(Wrap { trim: false }),
+        ImagePreviewState::Failed { filename, message } => render_image_preview_status(
+            frame,
             area,
+            format!("{filename}: {message}"),
+            theme::HighlightGroup::Error,
         ),
         ImagePreviewState::Ready { protocol, .. } => {
             frame.render_widget(RatatuiImage::new(protocol), area);
         }
     }
+}
+
+fn render_image_preview_status(
+    frame: &mut Frame,
+    area: Rect,
+    message: String,
+    highlight: theme::HighlightGroup,
+) {
+    frame.render_widget(
+        Paragraph::new(message)
+            .style(theme::current().apply(
+                highlight,
+                theme::current().style(theme::HighlightGroup::Normal),
+            ))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn render_thread_card_image_preview(
@@ -715,14 +673,11 @@ pub(in crate::tui::ui) fn message_item_lines(
     preview_accent_color: Option<u32>,
     line_offset: usize,
 ) -> Vec<Line<'static>> {
-    let preview_spacers = (preview_height > 0)
-        .then_some(InlinePreviewSpacer {
-            height: preview_height,
-            accent_color: preview_accent_color,
-            overflow_count: 0,
-        })
-        .into_iter()
-        .collect::<Vec<_>>();
+    let preview_spacer = (preview_height > 0).then_some(InlinePreviewSpacer {
+        height: preview_height,
+        accent_color: preview_accent_color,
+        overflow_count: 0,
+    });
     message_item_lines_with_previews(MessageItemLinesInput {
         author,
         author_style,
@@ -732,7 +687,7 @@ pub(in crate::tui::ui) fn message_item_lines(
         content,
         reactions: Vec::new(),
         content_width,
-        preview_spacers: &preview_spacers,
+        preview_spacer: preview_spacer.as_ref(),
         bottom_gap: true,
         line_offset,
         avatar_offset: MESSAGE_AVATAR_OFFSET,
@@ -749,7 +704,7 @@ fn message_item_lines_with_previews(input: MessageItemLinesInput<'_>) -> Vec<Lin
         content,
         reactions,
         content_width,
-        preview_spacers,
+        preview_spacer,
         bottom_gap,
         line_offset,
         avatar_offset,
@@ -790,7 +745,7 @@ fn message_item_lines_with_previews(input: MessageItemLinesInput<'_>) -> Vec<Lin
         spans.extend(line.spans());
         Line::from(spans)
     }));
-    for spacer in preview_spacers {
+    if let Some(spacer) = preview_spacer {
         lines.extend(image_preview_spacer_lines(spacer, avatar_offset));
     }
     lines.extend(reactions.into_iter().map(|line| {
@@ -1006,22 +961,8 @@ fn selected_message_border_style() -> Style {
     theme::current().style(theme::HighlightGroup::MessageSelectedBorder)
 }
 
-const SELECTED_MESSAGE_CONTENT_X_OFFSET: u16 = 0;
-const SELECTED_AVATAR_X_OFFSET: u16 = MESSAGE_SELECTION_PREFIX_WIDTH;
-
-pub(in crate::tui::ui) fn selected_message_content_x_offset(_selected: bool) -> u16 {
-    SELECTED_MESSAGE_CONTENT_X_OFFSET
-}
-
 fn loaded_custom_emoji_urls(emoji_images: &[EmojiImage<'_>]) -> Vec<String> {
     emoji_images.iter().map(|image| image.url.clone()).collect()
-}
-
-pub(in crate::tui::ui) fn selected_avatar_x_offset(
-    _selected_body_top: Option<isize>,
-    _avatar_row: isize,
-) -> u16 {
-    SELECTED_AVATAR_X_OFFSET
 }
 
 pub(in crate::tui::ui) fn selected_message_card_width(
@@ -1031,13 +972,6 @@ pub(in crate::tui::ui) fn selected_message_card_width(
     list_width
         .saturating_sub(usize::from(scrollbar_visible))
         .max(4)
-}
-
-pub(in crate::tui::ui) fn format_message_sent_time(
-    message_id: Id<MessageMarker>,
-    hour_format_24: bool,
-) -> String {
-    format_message_local_time(message_id, hour_format_24)
 }
 
 pub(in crate::tui::ui) fn date_separator_line(
@@ -1143,75 +1077,21 @@ fn preview_spacer_blank_line(accent_color: Option<u32>, avatar_offset: u16) -> L
     }
 }
 
-fn inline_preview_spacers_for_message(
+fn inline_preview_spacer_for_message(
     message: &MessageState,
     preview_width: u16,
     max_preview_height: u16,
-) -> Vec<InlinePreviewSpacer> {
-    let previews = message.inline_previews();
+) -> Option<InlinePreviewSpacer> {
+    let previews = message.flow_inline_previews();
     let album = media::image_preview_album_layout(&previews, preview_width, max_preview_height);
-    (album.height > 0)
-        .then(|| {
-            let accent_color = (previews.len() == 1)
-                .then(|| previews[0].accent_color)
-                .flatten();
-            InlinePreviewSpacer {
-                height: u16::try_from(album.height).unwrap_or(u16::MAX),
-                accent_color,
-                overflow_count: album.overflow_count,
-            }
-        })
-        .into_iter()
-        .collect()
-}
-
-#[cfg(test)]
-pub(in crate::tui::ui) fn inline_image_preview_row(
-    messages: &[&MessageState],
-    state: &DashboardState,
-    message_index: usize,
-    content_width: usize,
-    line_offset: usize,
-    previous_preview_rows: usize,
-) -> isize {
-    let prior_rows = messages
-        .iter()
-        .enumerate()
-        .take(message_index)
-        .map(|(local_idx, message)| {
-            let global = state.message_scroll().saturating_add(local_idx);
-            state
-                .message_row_metrics_at_with_selected_bottom(
-                    global,
-                    message,
-                    content_width,
-                    0,
-                    0,
-                    state.focused_message_selection() == Some(local_idx),
-                )
-                .total_rows()
-        })
-        .sum::<usize>();
-    let current_rows = messages
-        .get(message_index)
-        .map(|message| {
-            let global = state.message_scroll().saturating_add(message_index);
-            let metrics = state.message_row_metrics_at_with_selected_bottom(
-                global,
-                message,
-                content_width,
-                0,
-                0,
-                false,
-            );
-            metrics
-                .body_top_offset()
-                .saturating_add(metrics.body_rows())
-        })
-        .unwrap_or(0);
-    let row = prior_rows
-        .saturating_add(current_rows)
-        .saturating_add(previous_preview_rows)
-        .saturating_sub(1);
-    row as isize - line_offset as isize
+    (album.height > 0).then(|| {
+        let accent_color = (previews.len() == 1)
+            .then(|| previews[0].accent_color)
+            .flatten();
+        InlinePreviewSpacer {
+            height: u16::try_from(album.height).unwrap_or(u16::MAX),
+            accent_color,
+            overflow_count: album.overflow_count,
+        }
+    })
 }

@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use ratatui::{
     Frame,
     layout::{Position, Rect},
@@ -69,6 +67,5 @@ pub(super) use header::render_header;
 pub(super) use members::render_members;
 #[cfg(test)]
 pub(super) use members::{member_display_label, member_name_style, primary_activity_summary};
-use shared::{
-    notification_count_badge, render_pane_filter_bar_with_cursor, split_pane_filter_area,
-};
+use shared::notification_count_badge;
+pub(super) use shared::{render_pane_filter_bar_with_cursor, split_pane_filter_area};

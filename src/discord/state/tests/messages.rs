@@ -339,13 +339,8 @@ fn current_user_poll_vote_update_refreshes_cached_poll_counts() {
     assert_eq!(poll.answers[1].vote_count, Some(1));
     assert!(!poll.answers[1].me_voted);
     assert_eq!(poll.total_votes, Some(2));
-}
 
-#[test]
-fn current_user_poll_vote_update_handles_missing_answer_counts() {
-    let channel_id: Id<ChannelMarker> = Id::new(10);
-    let message_id = Id::new(20);
-    let author_id = Id::new(99);
+    // A missing count is treated as zero before the current user's vote is added.
     let mut state = DiscordState::default();
     let mut poll = poll_info();
     poll.answers[1].vote_count = None;
@@ -987,6 +982,51 @@ fn message_update_handles_attachment_update_tristate() {
             assert_eq!(messages[0].attachments[0].filename, "cat.png");
         }
     }
+}
+
+#[test]
+fn message_update_replaces_components_only_when_present() {
+    let channel_id: Id<ChannelMarker> = Id::new(10);
+    let original = vec![MessageComponentInfo::TextDisplay {
+        content: "before".to_owned(),
+    }];
+    let replacement = vec![MessageComponentInfo::TextDisplay {
+        content: "after".to_owned(),
+    }];
+
+    let mut state = DiscordState::default();
+    state.apply_event(&message_create_event(MessageCreateFixture {
+        guild_id: None,
+        channel_id,
+        message_id: Id::new(20),
+        author_id: Id::new(99),
+        content: Some(String::new()),
+        components: original.clone(),
+        ..MessageCreateFixture::test_fixture_default()
+    }));
+
+    state.apply_event(&message_update_event(
+        channel_id,
+        Id::new(20),
+        MessageUpdateEventFields::default(),
+    ));
+    assert_eq!(
+        state.messages_for_channel(channel_id)[0].components,
+        original
+    );
+
+    state.apply_event(&message_update_event(
+        channel_id,
+        Id::new(20),
+        MessageUpdateEventFields {
+            components: Some(replacement.clone()),
+            ..MessageUpdateEventFields::default()
+        },
+    ));
+    assert_eq!(
+        state.messages_for_channel(channel_id)[0].components,
+        replacement
+    );
 }
 
 #[test]

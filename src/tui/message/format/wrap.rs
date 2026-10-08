@@ -1,4 +1,4 @@
-//! Plain-text wrap engine. Wraps at display width while distributing mention
+//! Plain-text wrap engine. Wraps at display width while distributing semantic
 //! highlights, styled ranges, and custom-emoji image slots per wrapped line.
 
 use ratatui::style::Style;
@@ -13,7 +13,7 @@ pub(in crate::tui) struct WrappedTextLine {
     pub(in crate::tui) text: String,
     pub(in crate::tui) source_start: usize,
     pub(in crate::tui) source_end: usize,
-    pub(super) mention_highlights: Vec<TextHighlight>,
+    pub(super) text_highlights: Vec<TextHighlight>,
     pub(super) image_slots: Vec<MessageContentImageSlot>,
 }
 
@@ -23,7 +23,7 @@ impl WrappedTextLine {
             text: String::new(),
             source_start: 0,
             source_end: 0,
-            mention_highlights: Vec::new(),
+            text_highlights: Vec::new(),
             image_slots: Vec::new(),
         }
     }
@@ -112,22 +112,6 @@ pub(super) fn wrap_text_line_with_styles(
     lines
 }
 
-/// Wraps `value` to `width`, distributing mention highlights and custom-
-/// emoji slots per line. Each slot is treated as an atomic `display_width`
-/// unit so the `:name:` fallback cannot straddle a wrap edge.
-#[cfg(test)]
-fn wrap_text_with_extras(
-    value: &str,
-    highlights: &[TextHighlight],
-    emoji_slots: &[InlineEmojiSlot],
-    width: usize,
-) -> Vec<(String, Vec<TextHighlight>, Vec<MessageContentImageSlot>)> {
-    wrap_text_with_metadata(value, highlights, emoji_slots, width)
-        .into_iter()
-        .map(|line| (line.text, line.mention_highlights, line.image_slots))
-        .collect()
-}
-
 fn wrapped_line(
     text: String,
     source_start: usize,
@@ -139,7 +123,7 @@ fn wrapped_line(
         text,
         source_start,
         source_end,
-        mention_highlights: highlights_for_range(highlights, source_start, source_end),
+        text_highlights: highlights_for_range(highlights, source_start, source_end),
         image_slots,
     }
 }
@@ -346,20 +330,20 @@ mod tests {
             },
         ];
 
-        let lines = wrap_text_with_extras(text, &[], &slots, 7);
+        let lines = wrap_text_with_metadata(text, &[], &slots, 7);
 
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].0, "ab:e:cd");
-        assert_eq!(lines[0].2.len(), 1);
-        assert_eq!(lines[0].2[0].col, 2);
-        assert_eq!(lines[0].2[0].byte_start, 2);
-        assert_eq!(lines[0].2[0].byte_len, 3);
-        assert_eq!(lines[0].2[0].url, "u-first");
-        assert_eq!(lines[1].0, ":e:");
-        assert_eq!(lines[1].2.len(), 1);
-        assert_eq!(lines[1].2[0].col, 0);
-        assert_eq!(lines[1].2[0].byte_start, 0);
-        assert_eq!(lines[1].2[0].url, "u-second");
+        assert_eq!(lines[0].text, "ab:e:cd");
+        assert_eq!(lines[0].image_slots.len(), 1);
+        assert_eq!(lines[0].image_slots[0].col, 2);
+        assert_eq!(lines[0].image_slots[0].byte_start, 2);
+        assert_eq!(lines[0].image_slots[0].byte_len, 3);
+        assert_eq!(lines[0].image_slots[0].url, "u-first");
+        assert_eq!(lines[1].text, ":e:");
+        assert_eq!(lines[1].image_slots.len(), 1);
+        assert_eq!(lines[1].image_slots[0].col, 0);
+        assert_eq!(lines[1].image_slots[0].byte_start, 0);
+        assert_eq!(lines[1].image_slots[0].url, "u-second");
     }
 
     #[test]
@@ -371,14 +355,14 @@ mod tests {
             display_width: 3,
             url: "u".to_owned(),
         }];
-        let lines = wrap_text_with_extras(text, &[], &slots, 4);
+        let lines = wrap_text_with_metadata(text, &[], &slots, 4);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].0, "ab");
-        assert_eq!(lines[0].2.len(), 0);
-        assert_eq!(lines[1].0, ":e:");
-        assert_eq!(lines[1].2.len(), 1);
-        assert_eq!(lines[1].2[0].col, 0);
-        assert_eq!(lines[1].2[0].byte_start, 0);
+        assert_eq!(lines[0].text, "ab");
+        assert_eq!(lines[0].image_slots.len(), 0);
+        assert_eq!(lines[1].text, ":e:");
+        assert_eq!(lines[1].image_slots.len(), 1);
+        assert_eq!(lines[1].image_slots[0].col, 0);
+        assert_eq!(lines[1].image_slots[0].byte_start, 0);
     }
 
     #[test]
@@ -398,9 +382,9 @@ mod tests {
         ];
 
         for (text, width, expected) in cases {
-            let lines = wrap_text_with_extras(text, &[], &[], width)
+            let lines = wrap_text_with_metadata(text, &[], &[], width)
                 .into_iter()
-                .map(|line| line.0)
+                .map(|line| line.text)
                 .collect::<Vec<_>>();
 
             assert_eq!(lines, expected);

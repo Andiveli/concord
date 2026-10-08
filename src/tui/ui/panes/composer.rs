@@ -1,5 +1,6 @@
 use super::*;
 use crate::tui::state::MINIMUM_ESTABLISHED_DM_MESSAGES;
+use crate::tui::text::{TextReplacement, remap_text_offset};
 use crate::tui::ui::emoji_overlay::{EmojiSlot, overlay_emoji_column, overlay_emoji_slots};
 
 pub(in crate::tui::ui) fn render_composer(
@@ -157,14 +158,12 @@ fn composer_cursor_document_position(
     let display_cursor = display_input
         .map_byte_index(cursor)
         .min(display_input.input.len());
-    let (prompt_row, prompt_column) = composer_prompt_cursor_position(
-        &display_input.input,
-        display_cursor,
-        composer_content_width(area.width),
-    );
+    let content_width = composer_content_width(area.width);
+    let (prompt_row, prompt_column) =
+        composer_prompt_cursor_position(&display_input.input, display_cursor, content_width);
 
     (
-        composer_rows_before_input(state).saturating_add(prompt_row),
+        composer_rows_before_input(state, content_width).saturating_add(prompt_row),
         prompt_column,
     )
 }
@@ -664,6 +663,17 @@ pub(in crate::tui::ui) fn composer_lines_with_loaded_custom_emoji_urls(
                 Span::styled(ping_label, ping_style),
             ]));
         }
+        if let Some(original) = state.composer_translation_original() {
+            let original = prefixed_composer_input(original);
+            let original_style = theme::current().style(theme::HighlightGroup::MessageSecondary);
+            for subline in wrap_text_lines(&original, width as usize) {
+                lines.push(Line::from(Span::styled(subline, original_style)));
+            }
+            lines.push(Line::from(Span::styled(
+                composer_status_divider(width, "translated"),
+                original_style,
+            )));
+        }
         let prefixed_input = prefixed_composer_input(&display_input.input);
         let wrapped = wrap_text_lines(&prefixed_input, width as usize);
         for subline in wrapped {
@@ -672,7 +682,7 @@ pub(in crate::tui::ui) fn composer_lines_with_loaded_custom_emoji_urls(
         return lines;
     }
 
-    let text = composer_text(state, width);
+    let text = composer_text(state);
     let wrapped = wrap_text_lines(&text, width as usize);
     // A locked composer is a hard stop, so override the dimmed placeholder with red.
     if state
@@ -692,39 +702,27 @@ pub(in crate::tui::ui) fn composer_lines_with_loaded_custom_emoji_urls(
     wrapped.into_iter().map(Line::from).collect()
 }
 
-struct ComposerDisplayInput {
-    input: String,
-    replacements: Vec<ComposerEmojiReplacement>,
+fn composer_status_divider(width: u16, label: &str) -> String {
+    let label = format!(" {label} ");
+    let width = usize::from(width);
+    if width <= label.len() {
+        return label.trim().chars().take(width).collect();
+    }
+
+    let remaining = width - label.len();
+    let left = remaining / 2;
+    let right = remaining - left;
+    format!("{}{}{}", "─".repeat(left), label, "─".repeat(right))
 }
 
-struct ComposerEmojiReplacement {
-    start: usize,
-    end: usize,
-    new_start: usize,
-    new_len: usize,
+struct ComposerDisplayInput {
+    input: String,
+    replacements: Vec<TextReplacement>,
 }
 
 impl ComposerDisplayInput {
     fn map_byte_index(&self, position: usize) -> usize {
-        let mut delta = 0isize;
-        for replacement in &self.replacements {
-            if position < replacement.start {
-                break;
-            }
-            if position < replacement.end {
-                let inside = position.saturating_sub(replacement.start);
-                return replacement
-                    .new_start
-                    .saturating_add(inside.min(replacement.new_len));
-            }
-            delta += replacement.new_len as isize - (replacement.end - replacement.start) as isize;
-        }
-
-        if delta < 0 {
-            position.saturating_sub(delta.unsigned_abs())
-        } else {
-            position.saturating_add(delta as usize)
-        }
+        remap_text_offset(&self.replacements, position)
     }
 }
 
@@ -767,11 +765,11 @@ fn composer_display_input(
         {
             let placeholder = " ".repeat(usize::from(EmojiImageSize::Compact.width()));
             input.push_str(&placeholder);
-            replacements.push(ComposerEmojiReplacement {
-                start,
-                end,
-                new_start,
-                new_len: placeholder.len(),
+            replacements.push(TextReplacement {
+                input_start: start,
+                input_end: end,
+                output_start: new_start,
+                output_len: placeholder.len(),
             });
         } else {
             input.push_str(&original[start..end]);
@@ -800,8 +798,9 @@ fn render_composer_custom_emoji_images(
     let ready_urls = ready_custom_emoji_urls(emoji_images);
     let display_input = composer_display_input(state, &ready_urls);
     let input = display_input.input.as_str();
-    let inner_width = composer_content_width(area.width) as usize;
-    let content_row = composer_rows_before_input(state);
+    let content_width = composer_content_width(area.width);
+    let inner_width = usize::from(content_width);
+    let content_row = composer_rows_before_input(state, content_width);
 
     let mut slots = Vec::new();
     for completion in state.composer_emoji_image_completions() {
@@ -998,14 +997,6 @@ fn append_composer_upload_preview_lines(
     });
 }
 
-fn append_composer_upload_preview_texts(
-    lines: &mut Vec<String>,
-    state: &DashboardState,
-    width: u16,
-) {
-    append_composer_upload_preview_rows(lines, state, width, |text| text);
-}
-
 fn append_composer_upload_preview_rows<T>(
     lines: &mut Vec<T>,
     state: &DashboardState,
@@ -1024,33 +1015,7 @@ fn append_composer_upload_preview_rows<T>(
     lines.push(build_line(separator));
 }
 
-pub(in crate::tui::ui) fn composer_text(state: &DashboardState, width: u16) -> String {
-    if state.composer_lock().is_none() && state.is_composing() {
-        let mut lines = pending_upload_texts(state, width);
-        append_composer_upload_preview_texts(&mut lines, state, width);
-        let input = prefixed_composer_input(state.composer_input());
-        if let Some(message) = state.reply_target_message_state() {
-            let (ping_label, _) = reply_ping_indicator(state);
-            lines.push(format!(
-                "{}{REPLY_PING_SEPARATOR}{ping_label}",
-                reply_target_hint(message, state, width)
-            ));
-        }
-        lines.push(input);
-        return lines.join("\n");
-    }
-
-    if state.composer_lock().is_none()
-        && (!state.composer_input().is_empty()
-            || !state.pending_composer_attachments().is_empty()
-            || state.clipboard_paste_pending())
-    {
-        let mut lines = pending_upload_texts(state, width);
-        append_composer_upload_preview_texts(&mut lines, state, width);
-        lines.push(prefixed_composer_input(state.composer_input()));
-        return lines.join("\n");
-    }
-
+pub(in crate::tui::ui) fn composer_text(state: &DashboardState) -> String {
     if let Some(channel) = state.selected_channel_state() {
         let label = match channel.kind.as_str() {
             "dm" | "Private" => format!("@{}", channel.name),

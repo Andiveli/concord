@@ -16,7 +16,7 @@ use tokio::{
     task::JoinHandle,
     time::{Instant as TokioInstant, sleep, sleep_until, timeout},
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+use tokio_tungstenite::{connect_async_tls_with_config, tungstenite::Message as WsMessage};
 use uuid::Uuid;
 
 use super::media::{
@@ -50,6 +50,7 @@ use crate::{
         voice::VoiceStateInfo,
     },
     logging,
+    support::tls,
 };
 
 const STREAM_RID: &str = "100";
@@ -363,10 +364,6 @@ impl StreamBroadcastRuntimeState {
                     update.error = Some(format!("Could not broadcast stream: {error}"));
                     self.clear_matching(stream_key, &mut update, false);
                 }
-            }
-            #[cfg(test)]
-            VoiceRuntimeEvent::BroadcastStreamCancelled { stream_key } => {
-                self.clear_matching(stream_key, &mut update, false);
             }
             VoiceRuntimeEvent::BroadcastStreamStopRequested { stream_key } => {
                 self.clear_matching(stream_key, &mut update, true);
@@ -693,10 +690,14 @@ async fn connect_stream_broadcast(
 ) -> Result<VoiceConnectionEnd, BroadcastConnectionFailure> {
     let url = gateway::voice_gateway_url(&session.endpoint)?;
     logging::debug("stream", format!("connecting broadcast websocket: {url}"));
-    let (ws, response) = timeout(VOICE_WEBSOCKET_CONNECT_TIMEOUT, connect_async(&url))
-        .await
-        .map_err(|_| "broadcast websocket connect timed out after 10s".to_owned())?
-        .map_err(|error| format!("broadcast websocket connect failed: {error}"))?;
+    let connector = tls::websocket_connector()?;
+    let (ws, response) = timeout(
+        VOICE_WEBSOCKET_CONNECT_TIMEOUT,
+        connect_async_tls_with_config(&url, None, false, Some(connector)),
+    )
+    .await
+    .map_err(|_| "broadcast websocket connect timed out after 10s".to_owned())?
+    .map_err(|error| format!("broadcast websocket connect failed: {error}"))?;
     logging::debug(
         "stream",
         format!(
@@ -767,7 +768,13 @@ async fn connect_stream_broadcast(
                 let value: Value = serde_json::from_str(&text)
                     .map_err(|error| format!("broadcast websocket JSON parse failed: {error}"))?;
                 gateway_control.record_sequence(&value).await;
-                let opcode = value.get("op").and_then(Value::as_u64).unwrap_or_default() as u8;
+                let Some(opcode) = gateway::voice_gateway_opcode(&value) else {
+                    logging::debug(
+                        "stream",
+                        "ignored broadcast gateway payload with invalid opcode",
+                    );
+                    continue;
+                };
                 match opcode {
                     VOICE_OP_READY => {
                         let ready = gateway::parse_voice_ready_payload(&value)?;
@@ -2649,25 +2656,6 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_runtime_pending_cancel_ends_preparing_once() {
-        let request = request();
-        let mut state = StreamBroadcastRuntimeState::default();
-        state.apply(&VoiceRuntimeEvent::BroadcastStreamRequested(
-            request.clone(),
-        ));
-
-        let cancelled = state.apply(&VoiceRuntimeEvent::BroadcastStreamCancelled {
-            stream_key: request.stream_key.clone(),
-        });
-        assert_eq!(cancelled.broadcast_ended, Some(request.clone()));
-
-        let repeated = state.apply(&VoiceRuntimeEvent::BroadcastStreamCancelled {
-            stream_key: request.stream_key,
-        });
-        assert!(repeated.broadcast_ended.is_none());
-    }
-
-    #[test]
     fn capture_failure_reports_error_and_ends_the_preparing_broadcast() {
         let request = request();
         let mut state = StreamBroadcastRuntimeState::default();
@@ -2685,8 +2673,15 @@ mod tests {
             failed.error.as_deref(),
             Some("Could not broadcast stream: PipeWire format negotiation failed")
         );
-        assert_eq!(failed.broadcast_ended, Some(request));
+        assert_eq!(failed.broadcast_ended, Some(request.clone()));
         assert!(state.requested.is_none());
+
+        let repeated = state.apply(&VoiceRuntimeEvent::BroadcastStreamCaptureFailed {
+            request_id: 1,
+            stream_key: request.stream_key,
+            error: "PipeWire format negotiation failed".to_owned(),
+        });
+        assert!(repeated.broadcast_ended.is_none());
     }
 
     #[test]

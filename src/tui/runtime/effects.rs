@@ -6,7 +6,7 @@ use std::{
 };
 
 #[cfg(target_os = "macos")]
-use std::sync::Once;
+use std::sync::OnceLock;
 
 use tokio::sync::mpsc;
 
@@ -30,6 +30,9 @@ use super::media_runtime::DashboardMediaRuntime;
 
 pub(super) const MAX_DRAINED_EFFECT_EVENTS: usize = 1024;
 static NOTIFICATION_FAILURE_LOGGED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+const MACOS_NOTIFICATION_BUNDLE_ID: &str = "com.apple.Terminal";
 
 pub(super) struct EffectContext<'a> {
     pub(super) state: &'a mut DashboardState,
@@ -71,6 +74,8 @@ pub(super) fn effect_forces_redraw(event: &AppEvent) -> bool {
             | AppEvent::AttachmentDownloadProgress { .. }
             | AppEvent::AttachmentDownloadCompleted { .. }
             | AppEvent::AttachmentDownloadFailed { .. }
+            | AppEvent::TranslationCompleted { .. }
+            | AppEvent::TranslationFailed { .. }
             | AppEvent::GatewayError { .. }
             | AppEvent::MediaPlaybackWindowReady { .. }
             | AppEvent::GatewayResumed
@@ -89,7 +94,7 @@ pub(super) fn process_effect_event(
     let missing_members = missing_members_for_effect(&event, ctx.state, now);
 
     dispatch_runtime_side_effects(&event, ctx);
-    record_media_event(&event, ctx);
+    ctx.media_runtime.record_event(&event, ctx.media_decode_tx);
     push_dashboard_effect(event, ctx);
     enqueue_member_hydration_requests(missing_members, ctx, now);
 
@@ -112,6 +117,7 @@ fn missing_members_for_effect(
         | AppEvent::InboxChannelMessagesLoaded { messages, .. }
         | AppEvent::MessageSearchLoaded {
             page: crate::discord::MessageSearchPage { messages, .. },
+            ..
         }
         | AppEvent::PinnedMessagesLoaded { messages, .. } => Some(messages.as_slice()),
         _ => None,
@@ -157,10 +163,6 @@ fn dispatch_runtime_side_effects(event: &AppEvent, ctx: &EffectContext<'_>) {
     }
 }
 
-fn record_media_event(event: &AppEvent, ctx: &mut EffectContext<'_>) {
-    ctx.media_runtime.record_event(event, ctx.media_decode_tx);
-}
-
 fn push_dashboard_effect(event: AppEvent, ctx: &mut EffectContext<'_>) {
     if let AppEvent::RichPresenceDetected { activities } = event {
         ctx.state.set_detected_rich_presence(activities);
@@ -201,8 +203,22 @@ fn enqueue_member_hydration_requests(
 fn dispatch_desktop_notification(notification: DesktopNotification, icon: Option<String>) {
     let title = notification.title;
     let body = notification.body;
+
+    #[cfg(target_os = "macos")]
+    if let Some(sequence) =
+        crate::support::macos_notification::sequence_for_current_terminal(&title, &body)
+    {
+        match deliver_terminal_notification(&sequence) {
+            Ok(()) => return,
+            Err(error) => logging::debug(
+                "notification",
+                format!("terminal notification failed, using macOS fallback: {error}"),
+            ),
+        }
+    }
+
     spawn_notification_task("notification", "desktop notification", move || {
-        deliver_desktop_notification(&title, &body, icon.as_deref())
+        deliver_platform_notification(&title, &body, icon.as_deref())
     });
 }
 
@@ -269,14 +285,6 @@ fn log_notification_failure_once(target: &str, message: String) {
     }
 }
 
-fn deliver_desktop_notification(
-    title: &str,
-    body: &str,
-    icon: Option<&str>,
-) -> std::result::Result<(), String> {
-    deliver_notify_rust_notification(title, body, icon)
-}
-
 fn play_voice_sound(
     kind: VoiceSoundKind,
     notification_options: NotificationOptions,
@@ -321,13 +329,22 @@ fn voice_sound_path(kind: VoiceSoundKind, options: &NotificationOptions) -> Opti
     }
 }
 
-fn deliver_notify_rust_notification(
+#[cfg(target_os = "macos")]
+fn deliver_terminal_notification(sequence: &[u8]) -> std::result::Result<(), String> {
+    let mut output = stdout().lock();
+    output
+        .write_all(sequence)
+        .and_then(|()| output.flush())
+        .map_err(|error| error.to_string())
+}
+
+fn deliver_platform_notification(
     title: &str,
     body: &str,
     icon: Option<&str>,
 ) -> std::result::Result<(), String> {
     #[cfg(target_os = "macos")]
-    init_macos_notification_identity();
+    init_macos_notification_identity()?;
 
     let mut notification = notify_rust::Notification::new();
     if let Some(icon) = icon {
@@ -344,31 +361,13 @@ fn deliver_notify_rust_notification(
 }
 
 #[cfg(target_os = "macos")]
-fn init_macos_notification_identity() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        // macOS needs a real app bundle, so fall back to Terminal for terminals
-        // we can't identify (e.g. kitty, tmux) -- otherwise notifications vanish.
-        let app_name = std::env::var("TERM_PROGRAM")
-            .ok()
-            .and_then(|program| macos_terminal_app_name(&program))
-            .unwrap_or("Terminal");
-        let bundle_id = notify_rust::get_bundle_identifier_or_default(app_name);
-        if bundle_id != "com.apple.Finder" {
-            let _ = notify_rust::set_application(&bundle_id);
-        }
-    });
-}
-
-#[cfg(target_os = "macos")]
-fn macos_terminal_app_name(term_program: &str) -> Option<&'static str> {
-    match term_program {
-        "Apple_Terminal" => Some("Terminal"),
-        "iTerm.app" => Some("iTerm"),
-        "WezTerm" => Some("WezTerm"),
-        "WarpTerminal" => Some("Warp"),
-        _ => None,
-    }
+fn init_macos_notification_identity() -> Result<(), String> {
+    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    INIT.get_or_init(|| {
+        notify_rust::set_application(MACOS_NOTIFICATION_BUNDLE_ID)
+            .map_err(|error| format!("macOS notification identity setup failed: {error}"))
+    })
+    .clone()
 }
 
 fn ring_terminal_bell() {

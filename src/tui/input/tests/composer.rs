@@ -18,6 +18,42 @@ fn composer_requires_selected_channel() {
 }
 
 #[test]
+fn ctrl_t_translates_and_toggles_the_active_composer_input() {
+    let mut state = state_with_channel_permissions(PERM_VIEW_CHANNEL | PERM_SEND_MESSAGES);
+    state.apply_translation_options(TranslationOptions {
+        provider: Some(TranslationProviderKind::LibreTranslate),
+        composer_target_language: Some("en".to_owned()),
+        ..Default::default()
+    });
+    state.start_composer();
+    state.insert_composer_text_at_cursor("안녕하세요");
+
+    let command = handle_key(&mut state, ctrl_key('t'));
+
+    assert_eq!(
+        command,
+        Some(AppCommand::Translate {
+            request_id: 1,
+            target: crate::discord::TranslationTarget::Composer,
+            target_language: "en".to_owned(),
+            content: "안녕하세요".to_owned(),
+        })
+    );
+
+    state.push_event(AppEvent::TranslationCompleted {
+        request_id: 1,
+        target: crate::discord::TranslationTarget::Composer,
+        translated_text: "hello".to_owned(),
+    });
+    assert_eq!(state.composer_input(), "hello");
+
+    assert_eq!(handle_key(&mut state, ctrl_key('t')), None);
+    assert_eq!(state.composer_input(), "안녕하세요");
+    assert_eq!(handle_key(&mut state, ctrl_key('t')), None);
+    assert_eq!(state.composer_input(), "hello");
+}
+
+#[test]
 fn enter_confirms_long_message_file_upload() {
     let permissions = PERM_VIEW_CHANNEL | PERM_SEND_MESSAGES | PERM_ATTACH_FILES;
     let draft = "x".repeat(2_001);
@@ -49,10 +85,10 @@ fn thread_edit_shortcuts_cycle_selectors_submit_and_cancel() {
     let mut state = state_with_forum_channel_posts();
     state.open_thread_edit(Id::new(31));
 
-    // Focus the auto-archive selector: Title -> Tags -> SlowMode -> AutoArchive.
-    handle_key(&mut state, key(KeyCode::Tab));
-    handle_key(&mut state, key(KeyCode::Tab));
-    handle_key(&mut state, key(KeyCode::Tab));
+    // Fixed arrow keys move the field selection even though the form can scroll.
+    handle_key(&mut state, key(KeyCode::Down));
+    handle_key(&mut state, key(KeyCode::Down));
+    handle_key(&mut state, key(KeyCode::Down));
 
     let initial = state
         .thread_edit_view()
@@ -93,7 +129,7 @@ fn page_keys_move_nested_tag_pickers_with_the_shared_list_viewport() {
         let mut state = state_with_forum_channel_posts();
         handle_key(&mut state, char_key('i'));
         for _ in 0..3 {
-            handle_key(&mut state, key(KeyCode::Tab));
+            handle_key(&mut state, key(KeyCode::Down));
         }
         handle_key(&mut state, key(KeyCode::Enter));
         crate::tui::ui::sync_view_heights(dashboard_area(), &mut state);
@@ -121,7 +157,7 @@ fn page_keys_move_nested_tag_pickers_with_the_shared_list_viewport() {
     {
         let mut state = state_with_forum_channel_posts();
         state.open_thread_edit(Id::new(31));
-        handle_key(&mut state, key(KeyCode::Tab));
+        handle_key(&mut state, key(KeyCode::Down));
         handle_key(&mut state, key(KeyCode::Enter));
         crate::tui::ui::sync_view_heights(dashboard_area(), &mut state);
 
@@ -233,17 +269,32 @@ fn forum_post_overlay_shortcuts_submit_and_cancel() {
 }
 
 #[test]
-fn number_keys_type_digits_while_composing() {
-    let mut state = state_with_channel_tree();
-    state.focus_pane(FocusPane::Channels);
-    handle_key(&mut state, key(KeyCode::Down));
-    handle_key(&mut state, key(KeyCode::Enter));
-    handle_key(&mut state, char_key('i'));
+fn composer_treats_shortcut_characters_as_text() {
+    for (case, input, debug_stays_closed) in [
+        ("number_keys_type_digits_while_composing", "4", false),
+        ("composer_treats_vim_keys_as_text", "jk", false),
+        ("backtick_types_while_composing", "`", true),
+    ] {
+        let mut state = state_with_channel_tree();
+        state.focus_pane(FocusPane::Channels);
+        handle_key(&mut state, key(KeyCode::Down));
+        handle_key(&mut state, key(KeyCode::Enter));
+        handle_key(&mut state, char_key('i'));
 
-    handle_key(&mut state, char_key('4'));
+        for value in input.chars() {
+            handle_key(&mut state, char_key(value));
+        }
 
-    assert_eq!(state.focus(), FocusPane::Messages);
-    assert_eq!(state.composer_input(), "4");
+        assert_eq!(state.focus(), FocusPane::Messages, "{case}");
+        assert!(state.is_composing(), "{case}");
+        assert_eq!(state.composer_input(), input, "{case}");
+        if debug_stays_closed {
+            assert!(
+                !state.is_active_modal_popup(crate::tui::state::ActiveModalPopupKind::DebugLog),
+                "{case}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -294,21 +345,6 @@ fn ctrl_c_clears_composer_without_quitting() {
     assert!(state.pending_composer_attachments().is_empty());
     assert!(!state.should_quit());
     remove_temp_upload_file(&attachment);
-}
-
-#[test]
-fn composer_treats_vim_keys_as_text() {
-    let mut state = state_with_channel_tree();
-    state.focus_pane(FocusPane::Channels);
-    handle_key(&mut state, key(KeyCode::Down));
-    handle_key(&mut state, key(KeyCode::Enter));
-    handle_key(&mut state, char_key('i'));
-
-    handle_key(&mut state, char_key('j'));
-    handle_key(&mut state, char_key('k'));
-
-    assert!(state.is_composing());
-    assert_eq!(state.composer_input(), "jk");
 }
 
 #[test]
@@ -579,7 +615,7 @@ fn composer_up_down_moves_cursor_between_lines() {
     handle_key(&mut state, key(KeyCode::Right));
     handle_key(&mut state, key(KeyCode::Down));
 
-    assert_eq!(state.composer_cursor_byte_index(), "가나\na".len());
+    assert_eq!(state.composer_cursor_byte_index(), "가나\nab".len());
     assert!(
         state
             .composer_input()
@@ -996,14 +1032,58 @@ fn direct_reply_shortcut_opens_composer() {
 }
 
 #[test]
-fn canceling_reply_composer_clears_reply_target() {
+fn starting_reply_preserves_existing_composer_draft() {
+    let mut state = state_with_messages(1);
+    state.start_composer();
+    for ch in "draft".chars() {
+        handle_key(&mut state, char_key(ch));
+    }
+    state.close_composer();
+    state.focus_pane(FocusPane::Messages);
+
+    handle_key(&mut state, char_key('R'));
+
+    assert!(state.is_composing());
+    assert_eq!(state.composer_input(), "draft");
+    assert!(state.reply_target_message_state().is_some());
+}
+
+#[test]
+fn starting_reply_preserves_existing_composer_attachments() {
+    let attachment = temp_upload_file("reply draft.png", &[1, 2, 3]);
+    let mut state = state_with_messages(1);
+    state.start_composer();
+    assert!(handle_paste(
+        &mut state,
+        attachment.to_str().expect("temp path is valid unicode"),
+    ));
+    assert_eq!(state.pending_composer_attachments().len(), 1);
+    assert_eq!(state.pending_composer_preview_attachment_count(), 1);
+    state.close_composer();
+    state.focus_pane(FocusPane::Messages);
+
+    handle_key(&mut state, char_key('R'));
+
+    assert!(state.is_composing());
+    assert_eq!(state.pending_composer_attachments().len(), 1);
+    assert_eq!(
+        state.pending_composer_attachments()[0].filename,
+        "reply draft.png"
+    );
+    assert_eq!(state.pending_composer_preview_attachment_count(), 1);
+    remove_temp_upload_file(&attachment);
+}
+
+#[test]
+fn canceling_reply_composer_preserves_draft_and_clears_reply_target() {
     let mut state = state_with_messages(1);
     state.focus_pane(FocusPane::Messages);
     handle_key(&mut state, char_key('R'));
     handle_key(&mut state, char_key('x'));
     handle_key(&mut state, key(KeyCode::Esc));
 
-    assert_eq!(state.composer_input(), "");
+    assert_eq!(state.composer_input(), "x");
+    assert!(state.reply_target_message_state().is_none());
 
     handle_key(&mut state, char_key('i'));
     handle_key(&mut state, char_key('n'));
@@ -1014,7 +1094,7 @@ fn canceling_reply_composer_clears_reply_target() {
         Some(AppCommand::SendMessage {
             channel_id: Id::new(2),
             nonce: Id::new(1),
-            content: "n".to_owned(),
+            content: "xn".to_owned(),
             reply_to: None,
             attachments: Vec::new(),
         })
@@ -1321,4 +1401,256 @@ fn multiselect_poll_picker_toggles_and_submits_selected_answers() {
         })
     );
     assert!(!state.is_active_modal_popup(crate::tui::state::ActiveModalPopupKind::PollVotePicker));
+}
+
+fn klipy_composer() -> DashboardState {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut state = state_with_channel_permissions(PERM_VIEW_CHANNEL | PERM_SEND_MESSAGES);
+    state.apply_klipy_options(crate::config::KlipyOptions {
+        api_key: Some("test-key".to_owned()),
+        api_key_env: Some("CONCORD_KLIPY_TEST_UNSET_KEY".to_owned()),
+    });
+    state.start_composer();
+    state
+}
+
+fn klipy_page() -> crate::klipy::GifPage {
+    serde_json::from_value(serde_json::json!({"has_next": true, "data": [
+        {"slug":"first", "title":"First", "file":{"hd":{"gif":{"url":"https://static.klipy.com/first.gif?a=1&b=2"}}}},
+        {"slug":"second", "title":"Second", "file":{"hd":{"gif":{"url":"https://static.klipy.com/second.gif"}}}}
+    ]})).unwrap()
+}
+
+#[test]
+fn klipy_selection_keeps_draft_until_normal_composer_send() {
+    let mut state = klipy_composer();
+    state.insert_composer_text_at_cursor("hello");
+    handle_key(&mut state, ctrl_key('g'));
+    let generation = state.gif_picker().unwrap().generation;
+    assert!(state.store_gif_results(generation, Ok(klipy_page())));
+    handle_key(&mut state, key(KeyCode::Down));
+    assert_eq!(state.gif_picker().unwrap().selected_result_index(), Some(0));
+    handle_key(&mut state, key(KeyCode::Down));
+    assert_eq!(state.gif_picker().unwrap().selected_result_index(), Some(1));
+    handle_key(&mut state, key(KeyCode::Up));
+    assert_eq!(handle_key(&mut state, key(KeyCode::Enter)), None);
+    assert!(state.gif_picker().is_none());
+    assert_eq!(
+        state.composer_input(),
+        "hello\nhttps://static.klipy.com/first.gif?a=1&b=2"
+    );
+    assert!(state.take_klipy_shares().is_empty());
+    let command = handle_key(&mut state, key(KeyCode::Enter));
+    assert!(
+        matches!(command, Some(AppCommand::SendMessage { content, .. }) if content == "hello\nhttps://static.klipy.com/first.gif?a=1&b=2")
+    );
+    assert_eq!(
+        state.take_klipy_shares(),
+        [("first".to_owned(), String::new())]
+    );
+    assert!(state.take_klipy_shares().is_empty());
+}
+
+#[test]
+fn klipy_query_paste_pagination_and_late_results_are_isolated() {
+    let mut state = klipy_composer();
+    state.insert_composer_text_at_cursor("draft");
+    handle_key(&mut state, ctrl_key('g'));
+    let old = state.gif_picker().unwrap().generation;
+    assert!(handle_paste(&mut state, "cat 🐈 & dog\n"));
+    assert_eq!(state.gif_picker().unwrap().query.value(), "");
+    handle_key(&mut state, key(KeyCode::Enter));
+    assert!(state.is_gif_query_editing());
+    assert!(handle_paste(&mut state, "cat 🐈 & dog\n"));
+    let generation = state.gif_picker().unwrap().generation;
+    assert_eq!(state.gif_picker().unwrap().query.value(), "cat 🐈 & dog");
+    assert!(!state.store_gif_results(old, Ok(klipy_page())));
+    handle_key(&mut state, key(KeyCode::Enter));
+    assert!(!state.is_gif_query_editing());
+    assert!(state.gif_picker().is_some());
+    state.store_gif_results(generation, Ok(klipy_page()));
+    handle_key(&mut state, key(KeyCode::Down));
+    handle_key(&mut state, key(KeyCode::Down));
+    assert_eq!(state.gif_picker().unwrap().selected_result_index(), Some(1));
+    let preview_generation = state.gif_picker().unwrap().preview_generation;
+    assert!(handle_mouse(
+        &mut state,
+        mouse(MouseEventKind::ScrollDown, 60, 10),
+        dashboard_area(),
+    ));
+    assert_eq!(state.gif_picker().unwrap().page, 2);
+    assert_eq!(
+        state.gif_picker().unwrap().preview_generation,
+        preview_generation
+    );
+    let page_two = state.gif_picker().unwrap().generation;
+    assert!(!state.store_gif_results(generation, Ok(klipy_page())));
+    state.store_gif_results(page_two, Ok(klipy_page()));
+    assert_eq!(state.gif_picker().unwrap().results.len(), 4);
+    assert_eq!(state.gif_picker().unwrap().selected_result_index(), Some(2));
+    handle_key(&mut state, key(KeyCode::Up));
+    assert_eq!(state.gif_picker().unwrap().selected_result_index(), Some(1));
+    handle_key(&mut state, key(KeyCode::Esc));
+    assert!(state.is_composing());
+    assert_eq!(state.composer_input(), "draft");
+    handle_key(&mut state, ctrl_key('g'));
+    assert!(!state.store_gif_results(page_two, Ok(klipy_page())));
+}
+
+#[test]
+fn klipy_paging_error_keeps_results_and_retries_the_failed_page() {
+    let mut state = klipy_composer();
+    handle_key(&mut state, ctrl_key('g'));
+    let first = state.gif_picker().unwrap().generation;
+    state.store_gif_results(first, Ok(klipy_page()));
+    handle_key(&mut state, key(KeyCode::Down));
+    handle_key(&mut state, key(KeyCode::Down));
+    handle_key(&mut state, key(KeyCode::Down));
+    let failed = state.gif_picker().unwrap().generation;
+    assert_eq!(state.gif_picker().unwrap().page, 2);
+    state.store_gif_results(failed, Err("KLIPY rate limit reached".to_owned()));
+    assert_eq!(state.gif_picker().unwrap().results.len(), 2);
+
+    handle_key(&mut state, key(KeyCode::Down));
+    let retry = state.gif_picker().unwrap();
+    assert_eq!(retry.page, 2);
+    assert!(retry.loading);
+    assert_ne!(retry.generation, failed);
+    let retry_generation = retry.generation;
+    state.store_gif_results(retry_generation, Ok(klipy_page()));
+    assert_eq!(state.gif_picker().unwrap().results.len(), 4);
+}
+
+#[test]
+fn klipy_empty_error_retry_and_cancel_do_not_change_draft() {
+    let mut state = klipy_composer();
+    state.insert_composer_text_at_cursor("draft");
+    handle_key(&mut state, ctrl_key('g'));
+    let generation = state.gif_picker().unwrap().generation;
+    state.store_gif_results(generation, Err("KLIPY rate limit reached".to_owned()));
+    handle_key(&mut state, char_key('r'));
+    let retry = state.gif_picker().unwrap().generation;
+    assert_ne!(retry, generation);
+    assert!(state.gif_picker().unwrap().loading);
+    state.store_gif_results(
+        retry,
+        Ok(crate::klipy::GifPage {
+            data: vec![],
+            has_next: false,
+        }),
+    );
+    handle_key(&mut state, key(KeyCode::Down));
+    handle_key(&mut state, key(KeyCode::Enter));
+    assert!(state.is_gif_query_editing());
+    assert_eq!(state.gif_picker().unwrap().page, 1);
+    handle_key(&mut state, key(KeyCode::Esc));
+    assert!(!state.is_gif_query_editing());
+    assert!(state.gif_picker().is_some());
+    handle_key(&mut state, key(KeyCode::Esc));
+    assert_eq!(state.composer_input(), "draft");
+    assert!(state.take_klipy_shares().is_empty());
+}
+
+#[test]
+fn klipy_clear_draft_does_not_register_a_share() {
+    let mut state = klipy_composer();
+    handle_key(&mut state, ctrl_key('g'));
+    let generation = state.gif_picker().unwrap().generation;
+    state.store_gif_results(generation, Ok(klipy_page()));
+    handle_key(&mut state, key(KeyCode::Down));
+    handle_key(&mut state, key(KeyCode::Enter));
+    handle_key(&mut state, ctrl_key('c'));
+    state.insert_composer_text_at_cursor("something else");
+    assert!(handle_key(&mut state, key(KeyCode::Enter)).is_some());
+    assert!(state.take_klipy_shares().is_empty());
+}
+
+#[test]
+fn klipy_without_key_explains_setup_and_retains_composer() {
+    let mut state = klipy_composer();
+    state.apply_klipy_options(crate::config::KlipyOptions {
+        api_key_env: Some("CONCORD_KLIPY_TEST_UNSET_KEY".to_owned()),
+        ..Default::default()
+    });
+    state.insert_composer_text_at_cursor("draft");
+    handle_key(&mut state, ctrl_key('g'));
+    assert!(state.gif_picker().is_none());
+    assert_eq!(state.composer_input(), "draft");
+    assert!(
+        state
+            .toast_message()
+            .unwrap()
+            .text
+            .contains("[klipy].api_key")
+    );
+}
+
+#[test]
+fn klipy_clipboard_read_cannot_escape_to_another_editor() {
+    let mut state = klipy_composer();
+    handle_key(&mut state, ctrl_key('g'));
+    handle_key(&mut state, key(KeyCode::Enter));
+    handle_key(&mut state, ctrl_key('v'));
+    let request_id = state.take_paste_clipboard_request().unwrap();
+    assert!(state.start_clipboard_paste(request_id));
+    handle_key(&mut state, key(KeyCode::Esc));
+    assert!(state.gif_picker().is_some());
+    assert!(state.finish_clipboard_paste(request_id));
+    assert_eq!(state.gif_picker().unwrap().query.value(), "");
+    handle_key(&mut state, key(KeyCode::Esc));
+    assert!(state.gif_picker().is_none());
+    assert_eq!(state.composer_input(), "");
+}
+
+#[test]
+fn klipy_search_focus_and_result_selection_follow_popup_keys() {
+    let keymap = KeymapOptions {
+        mappings: [
+            ("SelectNext".to_owned(), KeymapBinding::one("n")),
+            ("SelectPrevious".to_owned(), KeymapBinding::one("p")),
+        ]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    let mut state = state_with_channel_permissions_from_state(
+        state_with_keymap(keymap),
+        PERM_VIEW_CHANNEL | PERM_SEND_MESSAGES,
+    );
+    state.apply_klipy_options(crate::config::KlipyOptions {
+        api_key: Some("test-key".to_owned()),
+        api_key_env: Some("CONCORD_KLIPY_TEST_UNSET_KEY".to_owned()),
+    });
+    state.start_composer();
+    handle_key(&mut state, ctrl_key('g'));
+    let generation = state.gif_picker().unwrap().generation;
+    state.store_gif_results(generation, Ok(klipy_page()));
+
+    assert!(state.gif_picker().unwrap().query_selected);
+    handle_key(&mut state, char_key('j'));
+    assert!(state.gif_picker().unwrap().query_selected);
+    handle_key(&mut state, char_key('n'));
+    assert_eq!(state.gif_picker().unwrap().selected_result_index(), Some(0));
+    handle_key(&mut state, char_key('n'));
+    assert_eq!(state.gif_picker().unwrap().selected_result_index(), Some(1));
+    handle_key(&mut state, char_key('p'));
+    handle_key(&mut state, char_key('p'));
+    assert!(state.gif_picker().unwrap().query_selected);
+    assert!(!state.is_gif_query_editing());
+    handle_key(&mut state, key(KeyCode::Enter));
+    assert!(state.is_gif_query_editing());
+    handle_key(&mut state, char_key('n'));
+    assert_eq!(state.gif_picker().unwrap().query.value(), "n");
+    handle_key(&mut state, key(KeyCode::Esc));
+    assert!(state.gif_picker().is_some());
+    assert!(!state.is_gif_query_editing());
+
+    handle_key(&mut state, char_key('n'));
+    let search = crate::tui::ui::gif_picker_search_area(dashboard_area());
+    assert!(handle_mouse(
+        &mut state,
+        mouse(MouseEventKind::Down(MouseButton::Left), search.x, search.y),
+        dashboard_area(),
+    ));
+    assert!(state.is_gif_query_editing());
 }

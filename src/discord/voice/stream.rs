@@ -21,6 +21,7 @@ use super::media::{
     GatewayChildTasks, annex_b_nals, build_rtcp_sender_report, current_unix_time,
     packetize_h264_payloads,
 };
+use super::rtp::{RtcpPacketError, RtcpPackets};
 use super::runtime::MAX_VOICE_RECONNECT_ATTEMPTS;
 use super::*;
 
@@ -103,6 +104,29 @@ impl std::fmt::Debug for StreamGatewaySession {
     }
 }
 
+#[cfg(test)]
+impl StreamGatewaySession {
+    pub(super) fn for_test(stream_key: &str) -> Self {
+        Self {
+            connection_id: 1,
+            request: StreamWatchRequest {
+                stream_key: stream_key.to_owned(),
+                scope: VoiceScope::Guild(Id::new(1)),
+                channel_id: Id::new(2),
+                owner_id: Id::new(3),
+                display_name: "Streamer".to_owned(),
+            },
+            current_user_id: Id::new(4),
+            session_id: "parent-session".to_owned(),
+            rtc_server_id: "5".to_owned(),
+            rtc_channel_id: Id::new(6),
+            endpoint: "stream.example.com".to_owned(),
+            token: "stream-token".to_owned(),
+            reconnect_delay: Duration::ZERO,
+        }
+    }
+}
+
 struct StreamPlayerLogTasks {
     tasks: Vec<JoinHandle<()>>,
 }
@@ -176,21 +200,42 @@ impl From<String> for StreamConnectionFailure {
 pub(super) struct StreamRuntimeState {
     current_user_id: Option<Id<UserMarker>>,
     current_voice: Option<ObservedStreamVoiceState>,
-    requested: Option<StreamWatchRequest>,
+    watches: BTreeMap<String, StreamWatchState>,
+    next_connection_id: u64,
+}
+
+struct StreamWatchState {
+    request: StreamWatchRequest,
     create: Option<StreamCreateInfo>,
     server: Option<StreamServerInfo>,
     active: Option<StreamGatewaySession>,
     reconnect_attempts: u8,
-    next_connection_id: u64,
+}
+
+impl StreamWatchState {
+    fn new(request: StreamWatchRequest) -> Self {
+        Self {
+            request,
+            create: None,
+            server: None,
+            active: None,
+            reconnect_attempts: 0,
+        }
+    }
 }
 
 #[derive(Default)]
 pub(super) struct StreamRuntimeUpdate {
-    pub(super) close_stream_key: Option<String>,
+    pub(super) close: Vec<StreamWatchClose>,
+    pub(super) connect: Vec<StreamGatewaySession>,
+    pub(super) playback_ended: Vec<StreamPlaybackEnded>,
+    pub(super) errors: Vec<String>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct StreamWatchClose {
+    pub(super) stream_key: String,
     pub(super) send_delete: bool,
-    pub(super) connect: Option<StreamGatewaySession>,
-    pub(super) playback_ended: Option<StreamPlaybackEnded>,
-    pub(super) error: Option<String>,
 }
 
 pub(super) struct StreamPlaybackEnded {
@@ -205,65 +250,42 @@ impl StreamRuntimeState {
             VoiceRuntimeEvent::CurrentUserReady(user_id) => self.current_user_id = *user_id,
             VoiceRuntimeEvent::VoiceState(state) => self.record_voice_state(state, &mut update),
             VoiceRuntimeEvent::WatchStreamRequested(request) => {
-                if self
-                    .requested
-                    .as_ref()
-                    .is_none_or(|current| current.stream_key != request.stream_key)
-                {
-                    update.playback_ended =
-                        self.requested.take().map(|request| StreamPlaybackEnded {
-                            request,
-                            reconnecting: false,
-                        });
-                    update.close_stream_key =
-                        self.active.take().map(|active| active.request.stream_key);
-                    update.send_delete = update.close_stream_key.is_some();
-                    self.create = None;
-                    self.server = None;
-                    self.reconnect_attempts = 0;
-                }
-                self.requested = Some(request.clone());
+                self.watches
+                    .entry(request.stream_key.clone())
+                    .and_modify(|watch| watch.request = request.clone())
+                    .or_insert_with(|| StreamWatchState::new(request.clone()));
             }
             VoiceRuntimeEvent::WatchStreamCancelled { stream_key } => {
                 self.clear_matching(stream_key, &mut update, false);
             }
             VoiceRuntimeEvent::StreamCreate(stream) => {
-                if self
-                    .requested
-                    .as_ref()
-                    .is_some_and(|request| request.stream_key == stream.stream_key)
-                {
-                    self.create = Some(stream.clone());
+                if let Some(watch) = self.watches.get_mut(&stream.stream_key) {
+                    watch.create = Some(stream.clone());
                 }
             }
             VoiceRuntimeEvent::StreamServer(server) => {
-                if self
-                    .requested
-                    .as_ref()
-                    .is_some_and(|request| request.stream_key == server.stream_key)
-                {
-                    if self.active.as_ref().is_some_and(|active| {
+                if let Some(watch) = self.watches.get_mut(&server.stream_key) {
+                    if watch.active.as_ref().is_some_and(|active| {
                         !server.matches_connection(&active.endpoint, &active.token)
                     }) {
-                        update.playback_ended =
-                            self.requested
-                                .as_ref()
-                                .cloned()
-                                .map(|request| StreamPlaybackEnded {
-                                    request,
-                                    reconnecting: true,
-                                });
-                        update.close_stream_key =
-                            self.active.take().map(|active| active.request.stream_key);
+                        update.playback_ended.push(StreamPlaybackEnded {
+                            request: watch.request.clone(),
+                            reconnecting: true,
+                        });
+                        watch.active = None;
+                        update.close.push(StreamWatchClose {
+                            stream_key: server.stream_key.clone(),
+                            send_delete: false,
+                        });
                     }
-                    self.server = Some(server.clone());
+                    watch.server = Some(server.clone());
                 }
             }
             VoiceRuntimeEvent::StreamDelete(stream) => {
                 if let Some(request) = self
-                    .requested
-                    .as_ref()
-                    .filter(|request| request.stream_key == stream.stream_key)
+                    .watches
+                    .get(&stream.stream_key)
+                    .map(|watch| &watch.request)
                     && (!stream.reason.is_empty() || stream.unavailable)
                 {
                     let reason = if stream.reason.is_empty() {
@@ -271,7 +293,7 @@ impl StreamRuntimeState {
                     } else {
                         stream.reason.as_str()
                     };
-                    update.error = Some(format!(
+                    update.errors.push(format!(
                         "Could not watch {}'s stream: {reason}",
                         request.display_name
                     ));
@@ -282,11 +304,13 @@ impl StreamRuntimeState {
                 connection_id,
                 stream_key,
             } => {
-                if self.active.as_ref().is_some_and(|active| {
-                    active.connection_id == *connection_id
-                        && active.request.stream_key == *stream_key
-                }) {
-                    self.reconnect_attempts = 0;
+                if let Some(watch) = self.watches.get_mut(stream_key)
+                    && watch
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| active.connection_id == *connection_id)
+                {
+                    watch.reconnect_attempts = 0;
                 }
             }
             VoiceRuntimeEvent::StreamConnectionEnded {
@@ -294,54 +318,50 @@ impl StreamRuntimeState {
                 stream_key,
                 outcome,
             } => {
-                if self.active.as_ref().is_some_and(|active| {
-                    active.connection_id == *connection_id
-                        && active.request.stream_key == *stream_key
-                }) {
-                    self.active = None;
+                let terminal = if let Some(watch) = self.watches.get_mut(stream_key)
+                    && watch
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| active.connection_id == *connection_id)
+                {
+                    watch.active = None;
                     if *outcome == VoiceConnectionEnd::Stop
-                        || self.reconnect_attempts >= MAX_VOICE_RECONNECT_ATTEMPTS
+                        || watch.reconnect_attempts >= MAX_VOICE_RECONNECT_ATTEMPTS
                     {
-                        update.playback_ended =
-                            self.requested.take().map(|request| StreamPlaybackEnded {
-                                request,
-                                reconnecting: false,
-                            });
-                        self.create = None;
-                        self.server = None;
-                        self.reconnect_attempts = 0;
-                        update.close_stream_key = Some(stream_key.clone());
-                        update.send_delete = true;
+                        true
                     } else {
-                        self.reconnect_attempts = self.reconnect_attempts.saturating_add(1);
-                        update.playback_ended =
-                            self.requested
-                                .as_ref()
-                                .cloned()
-                                .map(|request| StreamPlaybackEnded {
-                                    request,
-                                    reconnecting: true,
-                                });
+                        watch.reconnect_attempts = watch.reconnect_attempts.saturating_add(1);
+                        update.playback_ended.push(StreamPlaybackEnded {
+                            request: watch.request.clone(),
+                            reconnecting: true,
+                        });
+                        false
                     }
+                } else {
+                    false
+                };
+                if terminal {
+                    let watch = self
+                        .watches
+                        .remove(stream_key)
+                        .expect("matched stream watch remains present");
+                    update.playback_ended.push(StreamPlaybackEnded {
+                        request: watch.request,
+                        reconnecting: false,
+                    });
+                    update.close.push(StreamWatchClose {
+                        stream_key: stream_key.clone(),
+                        send_delete: true,
+                    });
                 }
             }
             VoiceRuntimeEvent::Shutdown => {
-                update.playback_ended = self.requested.take().map(|request| StreamPlaybackEnded {
-                    request,
-                    reconnecting: false,
-                });
-                update.close_stream_key =
-                    self.active.take().map(|active| active.request.stream_key);
-                update.send_delete = update.close_stream_key.is_some();
-                self.create = None;
-                self.server = None;
+                self.clear_all(&mut update, true);
             }
             _ => {}
         }
 
-        if self.active.is_none() {
-            update.connect = self.connect_if_ready();
-        }
+        self.connect_ready_watches(&mut update);
         update
     }
 
@@ -351,14 +371,7 @@ impl StreamRuntimeState {
         }
         let Some(channel_id) = state.channel_id else {
             self.current_voice = None;
-            update.playback_ended = self.requested.take().map(|request| StreamPlaybackEnded {
-                request,
-                reconnecting: false,
-            });
-            update.close_stream_key = self.active.take().map(|active| active.request.stream_key);
-            update.send_delete = update.close_stream_key.is_some();
-            self.create = None;
-            self.server = None;
+            self.clear_all(update, true);
             return;
         };
         let Some(scope) = state.scope() else {
@@ -376,19 +389,23 @@ impl StreamRuntimeState {
             channel_id,
             session_id: session_id.clone(),
         });
-        if self
-            .requested
-            .as_ref()
-            .is_some_and(|request| request.scope != scope || request.channel_id != channel_id)
-        {
-            update.playback_ended = self.requested.take().map(|request| StreamPlaybackEnded {
-                request,
-                reconnecting: false,
-            });
-            update.close_stream_key = self.active.take().map(|active| active.request.stream_key);
-            update.send_delete = update.close_stream_key.is_some();
-            self.create = None;
-            self.server = None;
+        let stale_keys = self
+            .watches
+            .iter()
+            .filter(|(_, watch)| {
+                watch.request.scope != scope || watch.request.channel_id != channel_id
+            })
+            .map(|(stream_key, _)| stream_key.clone())
+            .collect::<Vec<_>>();
+        for stream_key in stale_keys {
+            self.clear_matching(&stream_key, update, true);
+        }
+    }
+
+    fn clear_all(&mut self, update: &mut StreamRuntimeUpdate, send_delete: bool) {
+        let stream_keys = self.watches.keys().cloned().collect::<Vec<_>>();
+        for stream_key in stream_keys {
+            self.clear_matching(&stream_key, update, send_delete);
         }
     }
 
@@ -398,59 +415,68 @@ impl StreamRuntimeState {
         update: &mut StreamRuntimeUpdate,
         send_delete: bool,
     ) {
-        if self
-            .requested
-            .as_ref()
-            .is_some_and(|request| request.stream_key == stream_key)
-        {
-            update.playback_ended = self.requested.take().map(|request| StreamPlaybackEnded {
-                request,
-                reconnecting: false,
+        let Some(watch) = self.watches.remove(stream_key) else {
+            return;
+        };
+        update.playback_ended.push(StreamPlaybackEnded {
+            request: watch.request,
+            reconnecting: false,
+        });
+        if watch.active.is_some() {
+            update.close.push(StreamWatchClose {
+                stream_key: stream_key.to_owned(),
+                send_delete,
             });
-            self.create = None;
-            self.server = None;
-            self.reconnect_attempts = 0;
-        }
-        if self
-            .active
-            .as_ref()
-            .is_some_and(|active| active.request.stream_key == stream_key)
-        {
-            self.active = None;
-            update.close_stream_key = Some(stream_key.to_owned());
-            update.send_delete = send_delete;
         }
     }
 
-    fn connect_if_ready(&mut self) -> Option<StreamGatewaySession> {
-        let request = self.requested.as_ref()?;
+    fn connect_ready_watches(&mut self, update: &mut StreamRuntimeUpdate) {
+        let stream_keys = self.watches.keys().cloned().collect::<Vec<_>>();
+        for stream_key in stream_keys {
+            if let Some(session) = self.connect_if_ready(&stream_key) {
+                update.connect.push(session);
+            }
+        }
+    }
+
+    fn connect_if_ready(&mut self, stream_key: &str) -> Option<StreamGatewaySession> {
+        let current_user_id = self.current_user_id?;
         let current_voice = self.current_voice.as_ref()?;
-        if request.scope != current_voice.scope || request.channel_id != current_voice.channel_id {
+        let watch = self.watches.get(stream_key)?;
+        if watch.active.is_some()
+            || watch.request.scope != current_voice.scope
+            || watch.request.channel_id != current_voice.channel_id
+        {
             return None;
         }
-        let create = self.create.as_ref()?;
-        let server = self.server.as_ref()?;
-        if create.stream_key != request.stream_key || server.stream_key != request.stream_key {
-            return None;
-        }
+        let create = watch.create.as_ref()?;
+        let server = watch.server.as_ref()?;
         let endpoint = server.endpoint.as_ref()?.trim_end_matches('/').to_owned();
         if endpoint.is_empty() || server.token.is_empty() {
             return None;
         }
+        let request = watch.request.clone();
+        let rtc_server_id = create.rtc_server_id.clone();
+        let rtc_channel_id = create.rtc_channel_id;
+        let token = server.token.clone();
+        let reconnect_delay = stream_watch_reconnect_delay(watch.reconnect_attempts);
 
         self.next_connection_id = self.next_connection_id.wrapping_add(1).max(1);
         let session = StreamGatewaySession {
             connection_id: self.next_connection_id,
-            request: request.clone(),
-            current_user_id: self.current_user_id?,
+            request,
+            current_user_id,
             session_id: current_voice.session_id.clone(),
-            rtc_server_id: create.rtc_server_id.clone(),
-            rtc_channel_id: create.rtc_channel_id,
+            rtc_server_id,
+            rtc_channel_id,
             endpoint,
-            token: server.token.clone(),
-            reconnect_delay: stream_watch_reconnect_delay(self.reconnect_attempts),
+            token,
+            reconnect_delay,
         };
-        self.active = Some(session.clone());
+        self.watches
+            .get_mut(stream_key)
+            .expect("stream watch remains present while connecting")
+            .active = Some(session.clone());
         Some(session)
     }
 }
@@ -513,10 +539,14 @@ async fn connect_stream_gateway(
 ) -> Result<VoiceConnectionEnd, StreamConnectionFailure> {
     let url = gateway::voice_gateway_url(&session.endpoint)?;
     logging::debug("stream", format!("connecting stream websocket: {url}"));
-    let (ws, response) = timeout(VOICE_WEBSOCKET_CONNECT_TIMEOUT, connect_async(&url))
-        .await
-        .map_err(|_| "stream websocket connect timed out after 10s".to_owned())?
-        .map_err(|error| format!("stream websocket connect failed: {error}"))?;
+    let connector = tls::websocket_connector()?;
+    let (ws, response) = timeout(
+        VOICE_WEBSOCKET_CONNECT_TIMEOUT,
+        connect_async_tls_with_config(&url, None, false, Some(connector)),
+    )
+    .await
+    .map_err(|_| "stream websocket connect timed out after 10s".to_owned())?
+    .map_err(|error| format!("stream websocket connect failed: {error}"))?;
     logging::debug(
         "stream",
         format!("stream websocket connected: status={}", response.status()),
@@ -602,7 +632,13 @@ async fn connect_stream_gateway(
                 let value: Value = serde_json::from_str(&text)
                     .map_err(|error| format!("stream websocket JSON parse failed: {error}"))?;
                 gateway_control.record_sequence(&value).await;
-                let opcode = value.get("op").and_then(Value::as_u64).unwrap_or_default() as u8;
+                let Some(opcode) = gateway::voice_gateway_opcode(&value) else {
+                    logging::debug(
+                        "stream",
+                        "ignored stream gateway payload with invalid opcode",
+                    );
+                    continue;
+                };
                 match opcode {
                     VOICE_OP_READY => {
                         let ready = gateway::parse_voice_ready_payload(&value)?;
@@ -1053,43 +1089,33 @@ fn parse_stream_rtcp_sender_reports(
     compound: &[u8],
 ) -> Result<Vec<StreamRtcpSenderReport>, String> {
     let mut reports = Vec::new();
-    let mut offset = 0usize;
-    while offset < compound.len() {
-        let remaining = compound.len() - offset;
-        if remaining < 4 {
-            return Err("RTCP compound packet has a truncated header".to_owned());
-        }
-        if compound[offset] >> 6 != RTP_VERSION {
-            return Err("RTCP packet has an invalid version".to_owned());
-        }
-        let length_words_minus_one =
-            u16::from_be_bytes([compound[offset + 2], compound[offset + 3]]);
-        let packet_len = (usize::from(length_words_minus_one) + 1)
-            .checked_mul(4)
-            .ok_or_else(|| "RTCP packet length overflowed".to_owned())?;
-        let packet_end = offset
-            .checked_add(packet_len)
-            .filter(|end| *end <= compound.len())
-            .ok_or_else(|| "RTCP packet length exceeds the compound packet".to_owned())?;
-
-        if compound[offset + 1] == RTCP_SENDER_REPORT {
-            let report_count = usize::from(compound[offset] & 0x1f);
-            let minimum_len = 28 + report_count * 24;
-            if packet_len < minimum_len {
+    for packet in RtcpPackets::new(compound) {
+        let packet = packet.map_err(|error| match error {
+            RtcpPacketError::TruncatedHeader => {
+                "RTCP compound packet has a truncated header".to_owned()
+            }
+            RtcpPacketError::InvalidVersion => "RTCP packet has an invalid version".to_owned(),
+            RtcpPacketError::LengthExceedsData => {
+                "RTCP packet length exceeds the compound packet".to_owned()
+            }
+        })?;
+        if packet.packet_type() == RTCP_SENDER_REPORT {
+            let packet = packet.bytes();
+            let report_count = usize::from(packet[0] & 0x1f);
+            if packet.len() < 28 + report_count * 24 {
                 return Err("RTCP sender report is truncated".to_owned());
             }
-            let sender_ssrc = rtcp_u32(compound, offset + 4);
-            let ntp_seconds = rtcp_u32(compound, offset + 8);
-            let ntp_fraction = rtcp_u32(compound, offset + 12);
+            let sender_ssrc = rtcp_u32(packet, 4);
+            let ntp_seconds = rtcp_u32(packet, 8);
+            let ntp_fraction = rtcp_u32(packet, 12);
             reports.push(StreamRtcpSenderReport {
                 sender_ssrc,
                 ntp_timestamp: (u64::from(ntp_seconds) << 32) | u64::from(ntp_fraction),
-                rtp_timestamp: rtcp_u32(compound, offset + 16),
-                packet_count: rtcp_u32(compound, offset + 20),
-                octet_count: rtcp_u32(compound, offset + 24),
+                rtp_timestamp: rtcp_u32(packet, 16),
+                packet_count: rtcp_u32(packet, 20),
+                octet_count: rtcp_u32(packet, 24),
             });
         }
-        offset = packet_end;
     }
     Ok(reports)
 }
@@ -3532,7 +3558,6 @@ fn append_annex_b_nal(frame: &mut Vec<u8>, nal: &[u8]) {
 
 fn h264_nal_types(frame: &[u8]) -> Vec<u8> {
     annex_b_nals(frame)
-        .into_iter()
         .filter_map(|nal| nal.first().map(|byte| byte & 0x1f))
         .collect()
 }
@@ -3796,14 +3821,45 @@ mod tests {
         assert!(!stream_player_ready_is_current(None, 8));
     }
 
-    fn stream_request() -> StreamWatchRequest {
+    fn stream_request_for(owner_id: u64, display_name: &str) -> StreamWatchRequest {
         StreamWatchRequest {
-            stream_key: "guild:10:20:99".to_owned(),
+            stream_key: format!("guild:10:20:{owner_id}"),
             scope: VoiceScope::Guild(Id::new(10)),
             channel_id: Id::new(20),
-            owner_id: Id::new(99),
-            display_name: "Streamer".to_owned(),
+            owner_id: Id::new(owner_id),
+            display_name: display_name.to_owned(),
         }
+    }
+
+    fn stream_request() -> StreamWatchRequest {
+        stream_request_for(99, "Streamer")
+    }
+
+    fn stream_create(
+        stream_key: &str,
+        rtc_server_id: &str,
+        rtc_channel_id: u64,
+    ) -> StreamCreateInfo {
+        StreamCreateInfo {
+            stream_key: stream_key.to_owned(),
+            rtc_server_id: rtc_server_id.to_owned(),
+            rtc_channel_id: Id::new(rtc_channel_id),
+            viewer_ids: Vec::new(),
+            paused: false,
+        }
+    }
+
+    fn stream_server(stream_key: &str, endpoint: Option<&str>, token: &str) -> StreamServerInfo {
+        StreamServerInfo {
+            stream_key: stream_key.to_owned(),
+            endpoint: endpoint.map(str::to_owned),
+            token: token.to_owned(),
+        }
+    }
+
+    fn only_connection(update: StreamRuntimeUpdate, message: &str) -> StreamGatewaySession {
+        assert_eq!(update.connect.len(), 1, "{message}");
+        update.connect.into_iter().next().expect(message)
     }
 
     fn current_voice_state() -> VoiceStateInfo {
@@ -3826,19 +3882,17 @@ mod tests {
         state.apply(&VoiceRuntimeEvent::WatchStreamRequested(stream_request()));
         state.apply(&VoiceRuntimeEvent::CurrentUserReady(Some(Id::new(5))));
         state.apply(&VoiceRuntimeEvent::VoiceState(current_voice_state()));
-        state.apply(&VoiceRuntimeEvent::StreamCreate(StreamCreateInfo {
-            stream_key: "guild:10:20:99".to_owned(),
-            rtc_server_id: "400".to_owned(),
-            rtc_channel_id: Id::new(401),
-            viewer_ids: Vec::new(),
-            paused: false,
-        }));
-        let update = state.apply(&VoiceRuntimeEvent::StreamServer(StreamServerInfo {
-            stream_key: "guild:10:20:99".to_owned(),
-            endpoint: Some("stream.example.com".to_owned()),
-            token: "stream-token".to_owned(),
-        }));
-        let session = update.connect.expect("stream session should be ready");
+        state.apply(&VoiceRuntimeEvent::StreamCreate(stream_create(
+            "guild:10:20:99",
+            "400",
+            401,
+        )));
+        let update = state.apply(&VoiceRuntimeEvent::StreamServer(stream_server(
+            "guild:10:20:99",
+            Some("stream.example.com"),
+            "stream-token",
+        )));
+        let session = only_connection(update, "stream session should be ready");
         (state, session)
     }
 
@@ -4238,38 +4292,39 @@ mod tests {
     }
 
     #[test]
-    fn stream_video_starts_at_idr_with_cached_parameter_sets() {
-        let parameter_sets = vec![0, 0, 0, 1, 0x67, 0x11, 0, 0, 0, 1, 0x68, 0x22];
-        let predicted = vec![0, 0, 0, 1, 0x41, 0x33];
-        let idr = vec![0, 0, 0, 1, 0x65, 0x44];
-        let mut gate = H264StartupGate::default();
+    fn stream_video_startup_requires_cached_parameter_sets_and_idr() {
+        {
+            let parameter_sets = vec![0, 0, 0, 1, 0x67, 0x11, 0, 0, 0, 1, 0x68, 0x22];
+            let predicted = vec![0, 0, 0, 1, 0x41, 0x33];
+            let idr = vec![0, 0, 0, 1, 0x65, 0x44];
+            let mut gate = H264StartupGate::default();
 
-        assert_eq!(gate.accept(parameter_sets), None);
-        assert_eq!(gate.accept(predicted.clone()), None);
+            assert_eq!(gate.accept(parameter_sets), None);
+            assert_eq!(gate.accept(predicted.clone()), None);
 
-        let startup = gate
-            .accept(idr)
-            .expect("IDR should start local video playback");
-        assert_eq!(h264_nal_types(&startup), vec![7, 8, 5]);
-        assert!(gate.is_started());
-        assert_eq!(gate.accept(predicted.clone()), Some(predicted));
-    }
+            let startup = gate
+                .accept(idr)
+                .expect("IDR should start local video playback");
+            assert_eq!(h264_nal_types(&startup), vec![7, 8, 5]);
+            assert!(gate.is_started());
+            assert_eq!(gate.accept(predicted.clone()), Some(predicted));
+        }
 
-    #[test]
-    fn stream_video_waits_for_parameter_sets_before_accepting_idr() {
-        let idr = vec![0, 0, 0, 1, 0x65, 0x44];
-        let parameter_sets = vec![0, 0, 0, 1, 0x67, 0x11, 0, 0, 0, 1, 0x68, 0x22];
-        let mut gate = H264StartupGate::default();
+        {
+            let idr = vec![0, 0, 0, 1, 0x65, 0x44];
+            let parameter_sets = vec![0, 0, 0, 1, 0x67, 0x11, 0, 0, 0, 1, 0x68, 0x22];
+            let mut gate = H264StartupGate::default();
 
-        assert_eq!(gate.accept(idr.clone()), None);
-        assert!(!gate.is_started());
-        assert_eq!(gate.accept(parameter_sets), None);
+            assert_eq!(gate.accept(idr.clone()), None);
+            assert!(!gate.is_started());
+            assert_eq!(gate.accept(parameter_sets), None);
 
-        let startup = gate
-            .accept(idr)
-            .expect("IDR should start after parameter sets arrive");
-        assert_eq!(h264_nal_types(&startup), vec![7, 8, 5]);
-        assert!(gate.is_started());
+            let startup = gate
+                .accept(idr)
+                .expect("IDR should start after parameter sets arrive");
+            assert_eq!(h264_nal_types(&startup), vec![7, 8, 5]);
+            assert!(gate.is_started());
+        }
     }
 
     #[test]
@@ -4392,25 +4447,29 @@ mod tests {
     }
 
     #[test]
-    fn stream_keyframe_request_uses_encrypted_compound_rtcp() {
-        let sender_ssrc = 0x0102_0304;
-        let media_ssrc = 0x0506_0708;
-        let pli = build_rtcp_pli(sender_ssrc, media_ssrc);
-        let feedback = build_stream_rtcp_compound(sender_ssrc, None, Some(&pli));
-        assert_eq!(&feedback[..4], &[0x80, 201, 0, 1]);
-        assert_eq!(&feedback[4..8], &sender_ssrc.to_be_bytes());
+    fn stream_compound_rtcp_reports_source_and_round_trips() {
+        let keyframe_sender_ssrc = 0x0102_0304;
+        let keyframe_media_ssrc = 0x0506_0708;
+        let keyframe_pli = build_rtcp_pli(keyframe_sender_ssrc, keyframe_media_ssrc);
+        let keyframe_feedback =
+            build_stream_rtcp_compound(keyframe_sender_ssrc, None, Some(&keyframe_pli));
+        assert_eq!(&keyframe_feedback[..4], &[0x80, 201, 0, 1]);
+        assert_eq!(
+            &keyframe_feedback[4..8],
+            &keyframe_sender_ssrc.to_be_bytes()
+        );
 
         for mode in [AEAD_AES256_GCM_RTPSIZE, AEAD_XCHACHA20_POLY1305_RTPSIZE] {
             let key = [0x42; 32];
             let encryptor =
                 VoiceRtpEncryptor::new(mode, &key).expect("feedback encryptor should initialize");
             let encrypted = encryptor
-                .encrypt_rtcp_feedback(&feedback, 9u32.to_be_bytes())
+                .encrypt_rtcp_feedback(&keyframe_feedback, 9u32.to_be_bytes())
                 .expect("RTCP feedback should encrypt");
-            assert_eq!(&encrypted[..8], &feedback[..8]);
+            assert_eq!(&encrypted[..8], &keyframe_feedback[..8]);
             assert_eq!(
                 encrypted.len(),
-                feedback.len() + RTP_AEAD_TAG_BYTES + RTP_AEAD_NONCE_SUFFIX_BYTES
+                keyframe_feedback.len() + RTP_AEAD_TAG_BYTES + RTP_AEAD_NONCE_SUFFIX_BYTES
             );
 
             let decryptor =
@@ -4418,12 +4477,9 @@ mod tests {
             let decrypted = decryptor
                 .decrypt_rtcp_feedback(&encrypted)
                 .expect("RTCP feedback body should decrypt");
-            assert_eq!(decrypted, feedback);
+            assert_eq!(decrypted, keyframe_feedback);
         }
-    }
 
-    #[test]
-    fn stream_compound_rtcp_reports_source_and_round_trips() {
         let sender_ssrc = 7;
         let media_ssrc = 42;
         let mut control = StreamRtcpControl::default();
@@ -4560,31 +4616,79 @@ mod tests {
             30,
             45_000,
         ));
+        compound.extend_from_slice(&build_rtcp_sender_report(
+            0x0506_0708,
+            Duration::new(2, 0),
+            180_000,
+            60,
+            90_000,
+        ));
+        compound.extend_from_slice(&build_rtcp_receiver_report(8, None));
 
         let reports = parse_stream_rtcp_sender_reports(&compound)
             .expect("compound RTCP should contain a valid sender report");
 
         assert_eq!(
             reports,
-            vec![StreamRtcpSenderReport {
-                sender_ssrc,
-                ntp_timestamp: (u64::from(2_208_988_801u32) << 32) | 0x8000_0000,
-                rtp_timestamp: 90_000,
-                packet_count: 30,
-                octet_count: 45_000,
-            }]
+            vec![
+                StreamRtcpSenderReport {
+                    sender_ssrc,
+                    ntp_timestamp: (u64::from(2_208_988_801u32) << 32) | 0x8000_0000,
+                    rtp_timestamp: 90_000,
+                    packet_count: 30,
+                    octet_count: 45_000,
+                },
+                StreamRtcpSenderReport {
+                    sender_ssrc: 0x0506_0708,
+                    ntp_timestamp: u64::from(2_208_988_802u32) << 32,
+                    rtp_timestamp: 180_000,
+                    packet_count: 60,
+                    octet_count: 90_000,
+                },
+            ]
         );
     }
 
     #[test]
-    fn stream_rejects_a_truncated_rtcp_sender_report() {
-        let mut report = build_rtcp_sender_report(42, Duration::from_secs(1), 90_000, 30, 45_000);
-        report[2..4].copy_from_slice(&100u16.to_be_bytes());
+    fn stream_rtcp_parser_keeps_empty_and_non_sender_packets_ignored() {
+        assert_eq!(parse_stream_rtcp_sender_reports(&[]), Ok(Vec::new()));
+        for packet in [[0x80, 100, 0, 0], [0x80, RTCP_RECEIVER_REPORT, 0, 0]] {
+            assert_eq!(parse_stream_rtcp_sender_reports(&packet), Ok(Vec::new()));
+        }
+    }
 
-        assert_eq!(
-            parse_stream_rtcp_sender_reports(&report),
-            Err("RTCP packet length exceeds the compound packet".to_owned())
-        );
+    #[test]
+    fn stream_rejects_malformed_compound_rtcp() {
+        let mut oversized =
+            build_rtcp_sender_report(42, Duration::from_secs(1), 90_000, 30, 45_000).to_vec();
+        oversized[2..4].copy_from_slice(&100u16.to_be_bytes());
+        let mut truncated_report_block =
+            build_rtcp_sender_report(42, Duration::from_secs(1), 90_000, 30, 45_000).to_vec();
+        truncated_report_block[0] |= 1;
+        let mut truncated_trailing_header = build_rtcp_receiver_report(7, None);
+        truncated_trailing_header.extend_from_slice(&[0x80, RTCP_RECEIVER_REPORT, 0]);
+
+        for (packet, expected) in [
+            (
+                vec![0x80, RTCP_RECEIVER_REPORT, 0],
+                "RTCP compound packet has a truncated header",
+            ),
+            (
+                truncated_trailing_header,
+                "RTCP compound packet has a truncated header",
+            ),
+            (
+                vec![0x40, RTCP_RECEIVER_REPORT, 0, 0],
+                "RTCP packet has an invalid version",
+            ),
+            (oversized, "RTCP packet length exceeds the compound packet"),
+            (truncated_report_block, "RTCP sender report is truncated"),
+        ] {
+            assert_eq!(
+                parse_stream_rtcp_sender_reports(&packet),
+                Err(expected.to_owned())
+            );
+        }
     }
 
     #[test]
@@ -4704,28 +4808,127 @@ mod tests {
             state
                 .apply(&VoiceRuntimeEvent::WatchStreamRequested(stream_request()))
                 .connect
-                .is_none()
+                .is_empty()
         );
         state.apply(&VoiceRuntimeEvent::CurrentUserReady(Some(Id::new(5))));
         state.apply(&VoiceRuntimeEvent::VoiceState(current_voice_state()));
-        state.apply(&VoiceRuntimeEvent::StreamCreate(StreamCreateInfo {
-            stream_key: "guild:10:20:99".to_owned(),
-            rtc_server_id: "400".to_owned(),
-            rtc_channel_id: Id::new(401),
-            viewer_ids: Vec::new(),
-            paused: false,
-        }));
+        state.apply(&VoiceRuntimeEvent::StreamCreate(stream_create(
+            "guild:10:20:99",
+            "400",
+            401,
+        )));
 
-        let update = state.apply(&VoiceRuntimeEvent::StreamServer(StreamServerInfo {
-            stream_key: "guild:10:20:99".to_owned(),
-            endpoint: Some("stream.example.com".to_owned()),
-            token: "stream-token".to_owned(),
-        }));
-        let session = update.connect.expect("stream session should now be ready");
+        let update = state.apply(&VoiceRuntimeEvent::StreamServer(stream_server(
+            "guild:10:20:99",
+            Some("stream.example.com"),
+            "stream-token",
+        )));
+        let session = only_connection(update, "stream session should now be ready");
         assert_eq!(session.session_id, "parent-session");
         assert_eq!(session.rtc_server_id, "400");
         assert_eq!(session.rtc_channel_id, Id::new(401));
         assert_eq!(session.request.owner_id, Id::new(99));
+    }
+
+    #[test]
+    fn stream_runtime_keeps_concurrent_watches_isolated() {
+        let (mut state, first) = connected_stream_runtime();
+        let second_request = stream_request_for(100, "Second Streamer");
+
+        let requested = state.apply(&VoiceRuntimeEvent::WatchStreamRequested(
+            second_request.clone(),
+        ));
+        assert!(requested.close.is_empty());
+        assert!(requested.playback_ended.is_empty());
+        assert!(requested.connect.is_empty());
+
+        state.apply(&VoiceRuntimeEvent::StreamCreate(stream_create(
+            &second_request.stream_key,
+            "500",
+            501,
+        )));
+        let second = only_connection(
+            state.apply(&VoiceRuntimeEvent::StreamServer(stream_server(
+                &second_request.stream_key,
+                Some("second-stream.example.com"),
+                "second-stream-token",
+            ))),
+            "second stream should connect independently",
+        );
+
+        assert_eq!(state.watches.len(), 2);
+        assert_eq!(
+            state
+                .watches
+                .get(&first.request.stream_key)
+                .and_then(|watch| watch.active.as_ref())
+                .map(|active| active.connection_id),
+            Some(first.connection_id)
+        );
+        assert_eq!(
+            state
+                .watches
+                .get(&second.request.stream_key)
+                .and_then(|watch| watch.active.as_ref())
+                .map(|active| active.connection_id),
+            Some(second.connection_id)
+        );
+
+        let stopped = state.apply(&stream_connection_ended(&second, VoiceConnectionEnd::Stop));
+        assert_eq!(
+            stopped.close,
+            vec![StreamWatchClose {
+                stream_key: second.request.stream_key.clone(),
+                send_delete: true,
+            }]
+        );
+        assert_eq!(stopped.playback_ended.len(), 1);
+        assert_eq!(stopped.playback_ended[0].request, second_request);
+        assert!(state.watches.contains_key(&first.request.stream_key));
+        assert!(!state.watches.contains_key(&second.request.stream_key));
+    }
+
+    #[test]
+    fn stream_runtime_voice_leave_closes_all_concurrent_watches() {
+        let (mut state, first) = connected_stream_runtime();
+        let second_request = stream_request_for(100, "Second Streamer");
+        state.apply(&VoiceRuntimeEvent::WatchStreamRequested(
+            second_request.clone(),
+        ));
+        state.apply(&VoiceRuntimeEvent::StreamCreate(stream_create(
+            &second_request.stream_key,
+            "500",
+            501,
+        )));
+        let second = only_connection(
+            state.apply(&VoiceRuntimeEvent::StreamServer(stream_server(
+                &second_request.stream_key,
+                Some("second-stream.example.com"),
+                "second-stream-token",
+            ))),
+            "second stream should connect independently",
+        );
+        let mut left_voice = current_voice_state();
+        left_voice.channel_id = None;
+        left_voice.session_id = None;
+
+        let update = state.apply(&VoiceRuntimeEvent::VoiceState(left_voice));
+
+        let mut closed_keys = update
+            .close
+            .iter()
+            .map(|close| close.stream_key.as_str())
+            .collect::<Vec<_>>();
+        closed_keys.sort_unstable();
+        let mut expected_keys = vec![
+            first.request.stream_key.as_str(),
+            second.request.stream_key.as_str(),
+        ];
+        expected_keys.sort_unstable();
+        assert_eq!(closed_keys, expected_keys);
+        assert!(update.close.iter().all(|close| close.send_delete));
+        assert_eq!(update.playback_ended.len(), 2);
+        assert!(state.watches.is_empty());
     }
 
     #[test]
@@ -4739,6 +4942,8 @@ mod tests {
         });
         let ended = cancelled
             .playback_ended
+            .into_iter()
+            .next()
             .expect("pending stream cancellation ends preparing playback");
         assert_eq!(ended.request, request);
         assert!(!ended.reconnecting);
@@ -4746,65 +4951,69 @@ mod tests {
         let repeated = state.apply(&VoiceRuntimeEvent::WatchStreamCancelled {
             stream_key: ended.request.stream_key,
         });
-        assert!(repeated.playback_ended.is_none());
+        assert!(repeated.playback_ended.is_empty());
     }
 
     #[test]
     fn stream_runtime_rotates_active_stream_servers() {
         let (mut state, initial) = connected_stream_runtime();
 
-        let rotated = state.apply(&VoiceRuntimeEvent::StreamServer(StreamServerInfo {
-            stream_key: initial.request.stream_key.clone(),
-            endpoint: Some("replacement.example.com".to_owned()),
-            token: "replacement-token".to_owned(),
-        }));
+        let rotated = state.apply(&VoiceRuntimeEvent::StreamServer(stream_server(
+            &initial.request.stream_key,
+            Some("replacement.example.com"),
+            "replacement-token",
+        )));
         assert_eq!(
-            rotated.close_stream_key.as_deref(),
-            Some(initial.request.stream_key.as_str())
+            rotated.close,
+            vec![StreamWatchClose {
+                stream_key: initial.request.stream_key.clone(),
+                send_delete: false,
+            }]
         );
-        assert!(!rotated.send_delete);
-        assert!(
-            rotated
-                .playback_ended
-                .as_ref()
-                .is_some_and(|ended| ended.reconnecting)
-        );
+        assert_eq!(rotated.playback_ended.len(), 1);
+        assert!(rotated.playback_ended[0].reconnecting);
+        assert_eq!(rotated.connect.len(), 1);
         let replacement = rotated
             .connect
+            .into_iter()
+            .next()
             .expect("new stream server starts a replacement connection");
         assert_eq!(replacement.endpoint, "replacement.example.com");
         assert_eq!(replacement.token, "replacement-token");
 
-        let unavailable = state.apply(&VoiceRuntimeEvent::StreamServer(StreamServerInfo {
-            stream_key: initial.request.stream_key.clone(),
-            endpoint: None,
-            token: "pending-token".to_owned(),
-        }));
+        let unavailable = state.apply(&VoiceRuntimeEvent::StreamServer(stream_server(
+            &initial.request.stream_key,
+            None,
+            "pending-token",
+        )));
         assert_eq!(
-            unavailable.close_stream_key.as_deref(),
-            Some(initial.request.stream_key.as_str())
+            unavailable.close,
+            vec![StreamWatchClose {
+                stream_key: initial.request.stream_key.clone(),
+                send_delete: false,
+            }]
         );
-        assert!(!unavailable.send_delete);
-        assert!(unavailable.connect.is_none());
+        assert!(unavailable.connect.is_empty());
 
-        let reallocated = state.apply(&VoiceRuntimeEvent::StreamServer(StreamServerInfo {
-            stream_key: initial.request.stream_key.clone(),
-            endpoint: Some("reallocated.example.com".to_owned()),
-            token: "reallocated-token".to_owned(),
-        }));
-        let active = reallocated
-            .connect
-            .expect("reallocated stream server reconnects");
+        let reallocated = state.apply(&VoiceRuntimeEvent::StreamServer(stream_server(
+            &initial.request.stream_key,
+            Some("reallocated.example.com"),
+            "reallocated-token",
+        )));
+        let active = only_connection(reallocated, "reallocated stream server reconnects");
         assert_ne!(active.connection_id, replacement.connection_id);
 
         let stale_end = state.apply(&stream_connection_ended(
             &replacement,
             VoiceConnectionEnd::Stop,
         ));
-        assert!(stale_end.close_stream_key.is_none());
-        assert!(stale_end.connect.is_none());
+        assert!(stale_end.close.is_empty());
+        assert!(stale_end.connect.is_empty());
         assert_eq!(
             state
+                .watches
+                .get(&active.request.stream_key)
+                .expect("reallocated stream watch remains active")
                 .active
                 .as_ref()
                 .expect("reallocated connection remains active")
@@ -4823,24 +5032,24 @@ mod tests {
                 VoiceConnectionEnd::Reconnect,
             ));
             assert!(
-                update.close_stream_key.is_none(),
+                update.close.is_empty(),
                 "retry {attempt} should keep the watch request active"
             );
-            active = update
-                .connect
-                .expect("retry within the limit should reconnect");
+            active = only_connection(update, "retry within the limit should reconnect");
         }
 
         let stopped = state.apply(&stream_connection_ended(
             &active,
             VoiceConnectionEnd::Reconnect,
         ));
-        assert!(stopped.connect.is_none());
+        assert!(stopped.connect.is_empty());
         assert_eq!(
-            stopped.close_stream_key.as_deref(),
-            Some(active.request.stream_key.as_str())
+            stopped.close,
+            vec![StreamWatchClose {
+                stream_key: active.request.stream_key.clone(),
+                send_delete: true,
+            }]
         );
-        assert!(stopped.send_delete);
     }
 
     #[test]
@@ -4849,12 +5058,14 @@ mod tests {
 
         let stopped = state.apply(&stream_connection_ended(&active, VoiceConnectionEnd::Stop));
 
-        assert!(stopped.connect.is_none());
+        assert!(stopped.connect.is_empty());
         assert_eq!(
-            stopped.close_stream_key.as_deref(),
-            Some(active.request.stream_key.as_str())
+            stopped.close,
+            vec![StreamWatchClose {
+                stream_key: active.request.stream_key.clone(),
+                send_delete: true,
+            }]
         );
-        assert!(stopped.send_delete);
     }
 
     #[test]
@@ -4864,9 +5075,8 @@ mod tests {
             &initial,
             VoiceConnectionEnd::Reconnect,
         ));
-        let mut active = first_retry
-            .connect
-            .expect("the first transport failure should reconnect");
+        let mut active =
+            only_connection(first_retry, "the first transport failure should reconnect");
 
         state.apply(&VoiceRuntimeEvent::StreamConnectionEstablished {
             connection_id: active.connection_id,
@@ -4874,13 +5084,13 @@ mod tests {
         });
 
         for _ in 0..MAX_VOICE_RECONNECT_ATTEMPTS {
-            active = state
-                .apply(&stream_connection_ended(
+            active = only_connection(
+                state.apply(&stream_connection_ended(
                     &active,
                     VoiceConnectionEnd::Reconnect,
-                ))
-                .connect
-                .expect("stable playback should restore the full retry budget");
+                )),
+                "stable playback should restore the full retry budget",
+            );
         }
     }
 

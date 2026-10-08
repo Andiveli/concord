@@ -10,7 +10,7 @@ Example `keymap.toml`:
 [keymap]
 StartComposer = { keys = ["c"] }
 ClosePopup = "q"
-OpenDebugLog = "`"
+OpenDebugPanel = "`"
 ReplyMessage = "<leader>mr"
 VoiceDeafen = "<leader>vd"
 VoiceMute = "<leader>vm"
@@ -39,6 +39,7 @@ MarkAllRead = "a"
 
 [keymap.composer]
 OpenEditor = "<C-o>"
+TranslateComposer = "<C-t>"
 DeletePreviousWord = "<A-backspace>"
 ```
 
@@ -127,7 +128,7 @@ Navigation and app actions:
 | `StartComposer`         | `"i"`                      | Start the message composer, or open the forum/media post composer overlay. |
 | `OpenPaneFilter`        | `"/"`                      | Open the focused pane filter or search.                                    |
 | `ClosePopup`            | `"q"`                      | Close the active popup.                                                    |
-| `OpenDebugLog`          | `` "`" ``                  | Open the Debug Log popup from the dashboard.                               |
+| `OpenDebugPanel`        | ``"`"``                    | Open the debug panel from the dashboard.                                   |
 | `RefreshScreen`         | `"<leader>r"`              | Clear and fully redraw the TUI.                                            |
 | `FocusGuildPane`        | `"1"`                      | Show and focus the Servers pane.                                           |
 | `FocusChannelPane`      | `"2"`                      | Show and focus the Channels pane.                                          |
@@ -157,7 +158,8 @@ These configured navigation actions also work while a modal popup owns input:
 | ------------------------------ | ---------------------------------------------- |
 | `SelectNext`, `SelectPrevious` | Lists, scrollable documents, and confirmations |
 | `HalfPageDown`, `HalfPageUp`   | Lists and scrollable documents                 |
-| `JumpTop`, `JumpBottom`        | Selectable lists                               |
+| `JumpTop`, `JumpBottom`        | Selectable lists and debug panel logs          |
+| `OpenPaneFilter`               | Debug panel log filter                         |
 
 Popup-local fixed shortcuts run first. `ClosePopup` is then matched directly as
 a single key instead of being treated as a popup navigation sequence. For
@@ -169,7 +171,7 @@ search, filter, or editor owns input. Use `Esc` or a modified/non-character
 Once a navigation sequence hint is open, its next key wins so the displayed
 continuation is always truthful. Physical `PageUp` and `PageDown`, plus
 configured modified or non-character half-page keys, remain available where a
-text popup supports paging. `OpenDebugLog` is a dashboard action and is not
+text popup supports paging. `OpenDebugPanel` is a dashboard action and is not
 part of popup navigation.
 
 Message actions:
@@ -177,6 +179,7 @@ Message actions:
 | Action name             | Default config | Action                                           |
 | ----------------------- | -------------- | ------------------------------------------------ |
 | `CopyMessage`           | `"y"`          | Copy selected message content.                   |
+| `TranslateMessage`      | `"T"`          | Translate and toggle the selected message.       |
 | `ReactMessage`          | `"r"`          | Open the reaction picker.                        |
 | `ReplyMessage`          | `"R"`          | Start a reply.                                   |
 | `DeleteMessage`         | `"d"`          | Open delete confirmation.                        |
@@ -252,29 +255,33 @@ move between title, body, attachments, and tags. `Enter` starts or finishes
 editing title/body, removes the selected attachment while choosing attachments,
 or toggles the selected tag. Paste files or images while editing the body to add
 attachments. Press `s` outside edit mode to create the post.
+`TranslateComposer` and `OpenGifPicker` apply only to the main message composer.
+The GIF picker supports new messages and replies, not editing existing messages.
 
-| Composer action        | Default config                                     | Action                                   |
-| ---------------------- | -------------------------------------------------- | ---------------------------------------- |
-| `OpenEditor`           | `"<C-e>"`                                          | Open the current draft in `$EDITOR`.     |
-| `PasteClipboard`       | `"<C-v>"`                                          | Request clipboard paste.                 |
-| `InsertNewline`        | `["<C-j>", "<S-enter>", "<C-enter>", "<A-enter>"]` | Insert a newline.                        |
-| `Submit`               | `"enter"`                                          | Submit the composer.                     |
-| `Close`                | `"esc"`                                            | Close the composer.                      |
-| `ClearInput`           | `"<C-c>"`                                          | Clear the composer input.                |
-| `RemoveLastAttachment` | `"delete"`                                         | Remove the last pending attachment.      |
-| `DeletePreviousChar`   | `"backspace"`                                      | Delete the previous character.           |
-| `DeletePreviousWord`   | `["<A-backspace>", "<C-backspace>", "<C-w>"]`      | Delete the word before the cursor.       |
-| `DeleteToLineStart`    | `"<C-u>"`                                          | Delete to the start of the current line. |
-| `DeleteToLineEnd`      | `"<C-k>"`                                          | Delete to the end of the current line.   |
-| `MoveCursorUp`         | `"up"`                                             | Move the cursor up.                      |
-| `MoveCursorDown`       | `"down"`                                           | Move the cursor down.                    |
-| `MoveCursorWordLeft`   | `"<C-left>"`                                       | Move the cursor one word left.           |
-| `MoveCursorLeft`       | `"left"`                                           | Move the cursor left.                    |
-| `MoveCursorWordRight`  | `"<C-right>"`                                      | Move the cursor one word right.          |
-| `MoveCursorRight`      | `"right"`                                          | Move the cursor right.                   |
-| `MoveCursorHome`       | `"home"`                                           | Move the cursor to the start.            |
-| `MoveCursorEnd`        | `"end"`                                            | Move the cursor to the end.              |
-| `ToggleReplyPing`      | `"<A-p>"`                                          | Toggle whether replies ping the author.  |
+| Composer action        | Default config                                     | Action                                      |
+| ---------------------- | -------------------------------------------------- | ------------------------------------------- |
+| `OpenGifPicker`        | `"<C-g>"`                                          | Search KLIPY GIFs and add one to the draft. |
+| `OpenEditor`           | `"<C-e>"`                                          | Open the current draft in `$EDITOR`.        |
+| `PasteClipboard`       | `"<C-v>"`                                          | Request clipboard paste.                    |
+| `InsertNewline`        | `["<C-j>", "<S-enter>", "<C-enter>", "<A-enter>"]` | Insert a newline.                           |
+| `Submit`               | `"enter"`                                          | Submit the composer.                        |
+| `Close`                | `"esc"`                                            | Close the composer.                         |
+| `ClearInput`           | `"<C-c>"`                                          | Clear the composer input.                   |
+| `RemoveLastAttachment` | `"delete"`                                         | Remove the last pending attachment.         |
+| `TranslateComposer`    | `"<C-t>"`                                          | Translate or switch composer drafts.        |
+| `DeletePreviousChar`   | `"backspace"`                                      | Delete the previous character.              |
+| `DeletePreviousWord`   | `["<A-backspace>", "<C-backspace>", "<C-w>"]`      | Delete the word before the cursor.          |
+| `DeleteToLineStart`    | `"<C-u>"`                                          | Delete to the start of the current line.    |
+| `DeleteToLineEnd`      | `"<C-k>"`                                          | Delete to the end of the current line.      |
+| `MoveCursorUp`         | `"up"`                                             | Move the cursor up.                         |
+| `MoveCursorDown`       | `"down"`                                           | Move the cursor down.                       |
+| `MoveCursorWordLeft`   | `"<C-left>"`                                       | Move the cursor one word left.              |
+| `MoveCursorLeft`       | `"left"`                                           | Move the cursor left.                       |
+| `MoveCursorWordRight`  | `"<C-right>"`                                      | Move the cursor one word right.             |
+| `MoveCursorRight`      | `"right"`                                          | Move the cursor right.                      |
+| `MoveCursorHome`       | `"home"`                                           | Move the cursor to the start.               |
+| `MoveCursorEnd`        | `"end"`                                            | Move the cursor to the end.                 |
+| `ToggleReplyPing`      | `"<A-p>"`                                          | Toggle whether replies ping the author.     |
 
 ## Focused pane actions
 
@@ -343,6 +350,7 @@ Message pane actions:
 ```toml
 [keymap.message_actions]
 CopyMessage = "y"
+TranslateMessage = "T"
 ReactMessage = "r"
 ReplyMessage = "R"
 DeleteMessage = "d"
@@ -362,6 +370,7 @@ OpenPollVotePicker = "c"
 | Scoped action           | Default | Action                                           |
 | ----------------------- | ------- | ------------------------------------------------ |
 | `CopyMessage`           | `y`     | Copy selected message content.                   |
+| `TranslateMessage`      | `T`     | Translate and toggle the selected message.       |
 | `ReactMessage`          | `r`     | Open the reaction picker.                        |
 | `ReplyMessage`          | `R`     | Start a reply.                                   |
 | `DeleteMessage`         | `d`     | Open delete confirmation.                        |
