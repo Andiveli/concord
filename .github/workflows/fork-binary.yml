@@ -1,0 +1,39 @@
+name: Build fork binary
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native media build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            libasound2-dev \
+            libclang-dev \
+            libpipewire-0.3-dev \
+            libva-dev \
+            nasm \
+            pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release binary
+        run: cargo build --release --locked
+      - name: Package binary and source identity
+        run: |
+          mkdir -p dist
+          install -m 755 target/release/concord dist/concord
+          (cd dist && sha256sum concord > concord.sha256)
+          git rev-parse HEAD > dist/source-commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: concord-linux-x86_64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
