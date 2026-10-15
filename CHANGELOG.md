@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.2] - 2026-10-15
+
+### Bug Fixes
+
+- _(tui)_ Show custom emoji names when images are disabled (#392) in [#392](https://github.com/chojs23/concord/pull/392) by @chojs23
+
+### Documentation
+
+- Remove ps1 installer path for now by @chojs23
+- Update Rust MSRV to 1.90 in CONTRIBUTING.md by @chojs23
+
+### Features
+
+- _(config)_ Make composer safety locks configurable (#393) in [#393](https://github.com/chojs23/concord/pull/393) by @chojs23
+
+### Miscellaneous Tasks
+
+- Update MSRV to Rust 1.99 by @chojs23
+
 ## [2.6.1] - 2026-09-29
 
 ### Bug Fixes
