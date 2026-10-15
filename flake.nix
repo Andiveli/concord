@@ -19,7 +19,7 @@
 
         # Keep the Nix toolchain aligned with Cargo.toml's minimum supported
         # Rust version so source builds behave consistently across installers.
-        rustToolchain = pkgs.rust-bin.stable."1.90.0".default;
+        rustToolchain = pkgs.rust-bin.stable."1.99.0".default;
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 

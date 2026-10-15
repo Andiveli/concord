@@ -2,7 +2,7 @@
 name = "concord"
 version = "2.6.1"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.99"
 description = "A terminal user interface client for Discord"
 homepage = "https://github.com/chojs23/concord"
 repository = "https://github.com/chojs23/concord"
