@@ -32,7 +32,7 @@ raw auth response bodies before sharing logs**.
 
 ## Development setup
 
-You need the Rust **stable** toolchain. MSRV is **1.85** and the edition is
+You need the Rust **stable** toolchain. MSRV is **1.90** and the edition is
 **2024**.
 
 ```sh
