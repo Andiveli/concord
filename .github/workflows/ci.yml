@@ -90,7 +90,7 @@ jobs:
             --volume /target \
             --env CARGO_TARGET_DIR=/target \
             --workdir /workspace \
-            rust:1.90-alpine3.22 \
+            rust:1.99-alpine3.22 \
             sh -c '
               set -eu
               apk add --no-cache \
