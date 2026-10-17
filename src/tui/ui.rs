@@ -74,8 +74,7 @@ use self::panes::{
 use self::panes::{
     composer_cursor_position, composer_lines, composer_lines_with_loaded_custom_emoji_urls,
     emoji_picker_lines, member_display_label, member_name_style, mention_picker_lines_for_test,
-    primary_activity_summary, render_composer, render_guilds,
-    verification_composer_text,
+    primary_activity_summary, render_composer, render_guilds, verification_composer_text,
 };
 #[cfg(test)]
 use self::popups::user_profile_popup_text;

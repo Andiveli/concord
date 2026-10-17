@@ -335,6 +335,13 @@ fn message_target_at(
     Some(InteractionTarget::Pane(FocusPane::Messages))
 }
 
+fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
+    column >= area.x
+        && column < area.x.saturating_add(area.width)
+        && row >= area.y
+        && row < area.y.saturating_add(area.height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,11 +370,4 @@ mod tests {
             }
         }
     }
-}
-
-fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
-    column >= area.x
-        && column < area.x.saturating_add(area.width)
-        && row >= area.y
-        && row < area.y.saturating_add(area.height)
 }
