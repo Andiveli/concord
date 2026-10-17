@@ -1975,7 +1975,7 @@ fn ready_pixels_replace_transient_surface_states_and_ignore_late_failures() {
             "{state}"
         );
         assert!(
-            avatars.reuse_cached_sources(std::slice::from_ref(&avatar), None, |_| Some(
+            avatars.reuse_cached_sources(std::slice::from_ref(&avatar), &[], None, |_| Some(
                 source.fresh_playback()
             )),
             "{state}"
@@ -2067,7 +2067,7 @@ fn visible_surfaces_reuse_exact_url_pixels_without_sharing_playback() {
         image_size: EmojiImageSize::Compact,
     };
     assert!(
-        avatars.reuse_cached_sources(std::slice::from_ref(&avatar), None, |url| previews
+        avatars.reuse_cached_sources(std::slice::from_ref(&avatar), &[], None, |url| previews
             .ready_image_for_url(url))
     );
     assert!(
